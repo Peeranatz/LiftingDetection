@@ -1,0 +1,7 @@
+# raw data ไม่ต้อง track ยกเว้น README
+data/raw/
+!data/raw/README.md
+
+# processed data ที่ไม่ต้องการ commit
+data/processed/*.npz
+!data/processed/README.md
