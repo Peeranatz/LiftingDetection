@@ -1,116 +1,172 @@
-import cv2 as cv 
-import mediapipe as mp 
-import time 
+import cv2 
+import mediapipe as mp
+import time
 import numpy as np
+import datetime as dt
+import csv
+from keras.models import load_model
+from collections import deque, namedtuple
 
-mpDraw = mp.solutions.drawing_utils
-mpPose = mp.solutions.pose 
-pose = mpPose.Pose()
-joints = mpPose.PoseLandmark
+# ===== Configuration =====
+MODEL_PATH = "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/models/lstm_model.h5"
+SHOULDER_WIDTH_M = 0.312
+SEQUENCE_LENGTH = 30
+ACTION_LABELS = ["standing", "moving", "carrying"]  # ปรับให้ตรงกับที่เทรน
+OUTPUT_CSV = "action_log.csv"
+DEBUG = False  # True เพื่อ debug prints
 
-NTU_SHOULDER_WIDTH_M = 0.312
+# ===== Mediapipe Setup =====
+mp_drawing = mp.solutions.drawing_utils
+mp_pose = mp.solutions.pose
+Point = namedtuple("Point", ["x", "y", "z"])
 
-cap = cv.VideoCapture(1)
-
-pTime = 0
-
-selected_mediapipe_joints = [
-    14, 16, 20, 22, 18,                 # Right arm
-    13, 15, 19, 17, 21,                 # Left arm
-    24, 26, 28, 23, 25, 27,             # Legs
-    "center_shoulder", 0, "center_hip"  # Body 
+# ===== Selected joints (NTU schema) =====
+SELECTED_JOINTS = [
+    14, 16, 20, 22, 18,      # Right arm
+    13, 15, 19, 17, 21,      # Left arm
+    24, 26, 28, 23, 25, 27,  # Legs
+    "center_shoulder", 0, "center_hip"
 ]
 
-def get_midpoint(lm1, lm2):
-    return (lm1.x + lm2.x) / 2, (lm1.y + lm2.y) / 2, (lm1.z + lm2.z) / 2
+# ===== Helper functions =====
 
-def normalize_mediapipe_to_ntu(landmarks, image_width, image_height):
-    # 1. คำนวณ scale (meter-per-pixel) จากความกว้างระหว่างหัวไหล่
-    l_shoulder = landmarks[joints.LEFT_SHOULDER.value]
-    r_shoulder = landmarks[joints.RIGHT_SHOULDER.value]
-    dx = (l_shoulder.x - r_shoulder.x) * image_width
-    dy = (l_shoulder.y - r_shoulder.y) * image_height
-    shoulder_pixel_dist = np.hypot(dx, dy)
-    m_per_pixel = NTU_SHOULDER_WIDTH_M / shoulder_pixel_dist if shoulder_pixel_dist else 1.0
+def calculate_m_per_pixel(l_sh: Point, r_sh: Point, img_w: int, img_h: int) -> float:
+    """Return meters per pixel by comparing shoulder width."""
+    dx = (l_sh.x - r_sh.x) * img_w
+    dy = (l_sh.y - r_sh.y) * img_h
+    dist = np.hypot(dx, dy)
+    return (SHOULDER_WIDTH_M / dist) if dist else 1.0
 
-    # 2. หา center ของสะโพกไว้ใช้เป็น origin
-    l_hip = landmarks[joints.LEFT_HIP.value]
-    r_hip = landmarks[joints.RIGHT_HIP.value]
-    center_hip = get_midpoint(l_hip, r_hip)
+def get_midpoint(a: Point, b: Point) -> Point:
+    """Return midpoint of two landmarks."""
+    return Point((a.x + b.x) / 2,
+                 (a.y + b.y) / 2,
+                 (a.z + b.z) / 2)
 
-    # 3. คำนวณ joint ทั้งหมดที่เลือก
-    joint_list = []
-    for j in selected_mediapipe_joints:
+def normalize_to_ntu(landmarks, img_w: int, img_h: int):
+    """
+    Normalize mediapipe landmarks to NTU coordinate system:
+    - center at hip midpoint
+    - invert y-axis
+    - scale to real-world meters
+    """
+    l_sh = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+    r_sh = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+    mpp = calculate_m_per_pixel(l_sh, r_sh, img_w, img_h)
+
+    l_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
+    r_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
+    hip_c = get_midpoint(l_hip, r_hip)
+    sh_c = get_midpoint(l_sh, r_sh)
+
+    joints_list = []
+    for j in SELECTED_JOINTS:
+        p = None
         if isinstance(j, int):
             p = landmarks[j]
         elif j == "center_shoulder":
-            p = type("Point", (), {})()  # สร้าง dummy object
-            p.x, p.y, p.z = get_midpoint(l_shoulder, r_shoulder)
-        elif j == "center_hip":
-            p = type("Point", (), {})()
-            p.x, p.y, p.z = center_hip
+            p = sh_c
+        else:  # center_hip
+            p = hip_c
 
-        # แปลงพิกัด (normalized → pixel → meter → centered → invert y)
-        x_px = p.x * image_width
-        y_px = p.y * image_height
-        z_px = p.z * image_width  # assume z ~ x scale
+        x_px = p.x * img_w
+        y_px = p.y * img_h
+        z_px = p.z * img_w
 
-        cx_px = center_hip[0] * image_width
-        cy_px = center_hip[1] * image_height
-        cz_px = 0  # ถือว่า hip z = 0
+        cx = hip_c.x * img_w
+        cy = hip_c.y * img_h
 
-        x_m = (x_px - cx_px) * m_per_pixel
-        y_m = -(y_px - cy_px) * m_per_pixel  # invert แกน y
-        z_m = (z_px - 0) * m_per_pixel
+        x_m = (x_px - cx) * mpp
+        y_m = -(y_px - cy) * mpp
+        z_m = z_px * mpp
 
-        joint_list.append([x_m, y_m, z_m])
+        joints_list.append([x_m, y_m, z_m])
 
-    return np.array(joint_list), m_per_pixel  # shape (19, 3)
+    return np.array(joints_list), mpp
 
-while True:
-    success, img = cap.read()
-    # img = cv.flip(img, 1)
-    
-    imgRGB = cv.cvtColor(img, cv.COLOR_BGR2RGB)
-    results = pose.process(imgRGB)
-    # print(results.pose_landmarks)
-    
-    if results.pose_landmarks:
-        mpDraw.draw_landmarks(img, results.pose_landmarks, mpPose.POSE_CONNECTIONS)
+def predict_action(buffer: deque, model) -> str:
+    """Predict action label from a sequence buffer."""
+    seq = np.array(buffer).reshape(1, SEQUENCE_LENGTH, -1)
+    pred = model.predict(seq, verbose=0)
+    return ACTION_LABELS[int(np.argmax(pred))]
 
-        h, w, c = img.shape
-        landmarks = results.pose_landmarks.landmark
+def save_action_log(logs: list, path: str) -> None:
+    """Save action log to CSV."""
+    with open(path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["action", "start_time", "end_time"])
+        writer.writerows(logs)
 
-        # 🔹 เรียก normalize function
-        ntu_pose, m_per_pixel = normalize_mediapipe_to_ntu(landmarks, w, h)
+# ===== Main Application =====
+def main():
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❗ Cannot open camera")
+        return
 
-        # 🔸 Print ค่าทุก joint ที่ normalize แล้ว
-        print("\nNormalized to NTU format (x, y, z) in meters:")
-        for i, (x, y, z) in enumerate(ntu_pose):
-            print(f"Joint {i:2d}: x={x:.3f}, y={y:.3f}, z={z:.3f}")
+    model = load_model(MODEL_PATH, compile=False)
+    buffer = deque(maxlen=SEQUENCE_LENGTH)
+    last_action = None
+    action_start = None
+    logs = []
+    p_time = time.time()
 
-        # 🔸 วาดจุดเฉพาะที่ normalize แล้ว (optional)
-        for i, (x, y, _) in enumerate(ntu_pose):
-            cx = int((x / m_per_pixel) + (landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x +
-                                        landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x) / 2 * w)
-            cy = int((-(y / m_per_pixel)) + (landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y +
-                                            landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y) / 2 * h)
-            cv.circle(img, (cx, cy), 4, (0, 255, 0), cv.FILLED)
-            
-    # if results.pose_landmarks:
-    #     mpDraw.draw_landmarks(img, results.pose_landmarks, mpPose.POSE_CONNECTIONS)
-    #     for id, lm in enumerate(results.pose_landmarks.landmark):
-    #         h, w, c = img.shape
-    #         print(id, lm)
-    #         cx, cy = int(lm.x * w), int(lm.y * h)
-    #         cv.circle(img, (cx, cy), 5, (255, 0, 0), cv.FILLED)
-        
-        cTime = time.time()
-        fps = 1 / (cTime - pTime)
-        pTime = cTime
-        cv.putText(img, f"FPS: {int(fps)}", (20, 30),
-                   cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    with mp_pose.Pose() as pose:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
 
-    cv.imshow("Video", img)
-    if cv.waitKey(1) & 0xFF == ord("q"):
-        break
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(img_rgb)
+
+            if results.pose_landmarks:
+                mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                h, w, _ = frame.shape
+                lm = results.pose_landmarks.landmark
+                ntu_pose, mpp = normalize_to_ntu(lm, w, h)
+                buffer.append(ntu_pose.flatten())
+
+                if len(buffer) == SEQUENCE_LENGTH:
+                    label = predict_action(buffer, model)
+                    now = dt.datetime.now()
+
+                    if label != last_action:
+                        if last_action:
+                            logs.append([last_action, action_start, now])
+                            if DEBUG:
+                                print(f"Logged: {last_action} | {action_start} → {now}")
+                        last_action = label
+                        action_start = now
+
+                    cv2.putText(frame, f"Action: {label}", (20, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+            # Display FPS
+            c_time = time.time()
+            fps = 1 / (c_time - p_time) if p_time else 0
+            p_time = c_time
+            cv2.putText(frame, f"FPS: {int(fps)}", (20, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+            cv2.imshow("ActionRecognition", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # Finalize log
+    if last_action and action_start:
+        end = dt.datetime.now().isoformat()
+        logs.append([last_action, action_start, end])
+        if DEBUG:
+            print(f"Final log: {last_action} | {action_start} → {end}")
+
+    print("\nAction Summary:")
+    for act, start, end in logs:
+        print(f"{act:10s} | {start} → {end}")
+
+if __name__ == '__main__':
+    main()
+
