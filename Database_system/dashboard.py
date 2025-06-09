@@ -2,33 +2,27 @@ from flask import (
     Flask,
     render_template_string,
     request,
-)  # นำเข้า Flask สำหรับสร้างเว็บ, render_template_string สำหรับแสดง HTML, request สำหรับรับค่าจากฟอร์ม
+)
 
-from models.action_model import Action  # นำเข้าโมเดล Action สำหรับข้อมูล action
-from models.object_model import (
-    ObjectDetection,
-)  # นำเข้าโมเดล ObjectDetection สำหรับข้อมูล object
+from models.action_model import Action
+from models.object_model import ObjectDetection
 
-app = Flask(__name__)  # สร้างแอป Flask
+app = Flask(__name__)
 
-
-@app.route("/", methods=["GET", "POST"])  # สร้าง route หลักของเว็บ รองรับทั้ง GET และ POST
+@app.route("/", methods=["GET", "POST"])
 def index():
-    # รับค่าจากฟอร์ม filter (ถ้าไม่มีค่าจะเป็น string ว่าง)
-    person_id = request.values.get("person_id", "")
+    # รับค่าจากฟอร์ม filter (ลบ person_id ออกจาก filter action)
     action = request.values.get("action", "")
     object_type = request.values.get("object_type", "")
     timestamp = request.values.get("timestamp", "")
+    person_id = request.values.get("person_id", "")
 
     # สร้าง dictionary สำหรับเก็บเงื่อนไข query ของ action
     action_query = {}
-    if person_id:
-        action_query["person_id"] = person_id
     if action:
         action_query["action"] = action
     if timestamp:
         from datetime import datetime, timedelta
-
         try:
             dt = datetime.strptime(timestamp, "%Y-%m-%d")
             action_query["start_time__lte"] = dt + timedelta(days=1)
@@ -44,7 +38,6 @@ def index():
         object_query["object_type"] = object_type
     if timestamp:
         from datetime import datetime, timedelta
-
         try:
             dt = datetime.strptime(timestamp, "%Y-%m-%d")
             object_query["start_time__lte"] = dt + timedelta(days=1)
@@ -56,18 +49,17 @@ def index():
     actions = Action.objects(**action_query).order_by("-start_time")[:20]
     objects = ObjectDetection.objects(**object_query).order_by("-start_time")[:20]
 
-    # สร้าง match list: เหตุการณ์ที่ action กับ object ซ้อนทับกัน (person_id เดียวกันและช่วงเวลาซ้อน)
+    # สร้าง match list: ใช้ person_id จาก object เท่านั้น
     matches = []
     for act in actions:
         for obj in objects:
             if (
-                act.person_id == obj.person_id
-                and act.start_time <= obj.end_time
+                act.start_time <= obj.end_time
                 and act.end_time >= obj.start_time
             ):
                 matches.append(
                     {
-                        "person_id": act.person_id,
+                        "person_id": obj.person_id,  # ใช้ person_id จาก object
                         "action": act.action,
                         "object_type": obj.object_type,
                         "action_start": act.start_time,
@@ -168,7 +160,6 @@ def index():
                         <table class="table table-striped table-hover align-middle">
                             <thead>
                                 <tr>
-                                    <th>Person ID</th>
                                     <th>Action</th>
                                     <th>Start Time</th>
                                     <th>End Time</th>
@@ -177,7 +168,6 @@ def index():
                             <tbody>
                                 {% for a in actions %}
                                 <tr>
-                                    <td>{{a.person_id}}</td>
                                     <td>{{a.action}}</td>
                                     <td>{{a.start_time.strftime('%d/%m/%Y %H:%M')}}</td>
                                     <td>{{a.end_time.strftime('%d/%m/%Y %H:%M')}}</td>
@@ -195,6 +185,7 @@ def index():
                                 <tr>
                                     <th>Person ID</th>
                                     <th>Object Type</th>
+                                    <th>Box ID</th>
                                     <th>Start Time</th>
                                     <th>End Time</th>
                                 </tr>
@@ -213,6 +204,7 @@ def index():
                                         {% endif %}
                                         {{o.object_type}}
                                     </td>
+                                    <td>{{o.box_id or '-'}}</td>
                                     <td>{{o.start_time.strftime('%d/%m/%Y %H:%M')}}</td>
                                     <td>{{o.end_time.strftime('%d/%m/%Y %H:%M')}}</td>
                                 </tr>
@@ -260,7 +252,6 @@ def index():
         matches=matches,
         request=request,
     )
-
 
 if __name__ == "__main__":
     app.run(debug=True)

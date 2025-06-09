@@ -4,7 +4,6 @@ from random import choice, randint
 from models.action_model import Action
 from models.object_model import ObjectDetection
 
-
 def random_data():
     names = ["sky", "bas", "chokun"]
     actions = ["ยก", "วาง", "เดิน", "หยิบ"]
@@ -25,10 +24,11 @@ def random_data():
         duration = randint(1, 10)
         start_time = base_time + timedelta(minutes=start_offset)
         end_time = start_time + timedelta(minutes=duration)
+        # สุ่ม box_id (เช่น ตัวเลขหรือรหัส)
+        box_id = f"BOX{randint(100,999)}"
         # log action และ object
-        log_action(person, action, start_time, end_time)
-        log_object(person, object_type, start_time, end_time)
-
+        log_action(action, start_time, end_time)  # ไม่มี person_id
+        log_object(person, object_type, start_time, end_time, box_id=box_id)
 
 def test_log_and_query():
     random_data()  # สร้างข้อมูลสุ่ม
@@ -36,13 +36,12 @@ def test_log_and_query():
     # Query ข้อมูล action
     actions = Action.objects()
     for a in actions:
-        print("Action:", a.person_id, a.action, a.start_time, a.end_time)
+        print("Action:", a.action, a.start_time, a.end_time)  # ไม่มี person_id
 
     # Query ข้อมูล object
     objects = ObjectDetection.objects()
     for o in objects:
-        print("Object:", o.person_id, o.object_type, o.start_time, o.end_time)
-
+        print("Object:", o.person_id, o.object_type, o.box_id, o.start_time, o.end_time)
 
 if __name__ == "__main__":
     test_log_and_query()
