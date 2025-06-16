@@ -1,5 +1,4 @@
 import cv2 as cv
-import pandas as pd
 import numpy as np
 import mediapipe as mp
 import time
@@ -25,7 +24,9 @@ mpPose = mp.solutions.pose
 pose = mpPose.Pose()
 Point = namedtuple("Point", ["x", "y", "z"])
 
-buffers = {}
+# last_action = {}   # track_id -> last action label 
+# action_start = {}  # track_id -> datetime of start 
+buffers = {}       # track_id -> deque 
 
 SELECTED_JOINTS = [
     14, 16, 20, 22, 18,      # Right arm
@@ -110,7 +111,7 @@ while cap.isOpened():
             continue
         
         track_id = int(box.id[0]) if box.id is not None else -1 
-        # print(f"ID: {track_id} | Label: {label}")
+        print(track_id)
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -139,7 +140,6 @@ while cap.isOpened():
             
             if len(buffers[track_id]) == SEQUENCE_LENGTH:
                 action_label = predict_action(buffers[track_id], action_model)
-                print("--------------------------------------------------")
                 now = dt.datetime.now()
                 
                 if action_label != last_action:
@@ -184,12 +184,3 @@ while cap.isOpened():
 
 cap.release()
 cv.destroyAllWindows()
-
-  # for lm in pose_results.pose_landmarks.landmark:
-                # พิกัดใน ROI
-                # cx_roi = int(lm.x * w_roi)
-                # cy_roi = int(lm.y * h_roi)
-                # offset กลับไปยังภาพหลัก
-                # cx = x1 + cx_roi
-                # cy = y1 + cy_roi
-                # cv.circle(frame, (cx, cy), 4, (0, 0, 255), cv.FILLED)
