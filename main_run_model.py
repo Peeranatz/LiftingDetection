@@ -1,32 +1,206 @@
+import cv2 as cv
+import numpy as np
+import mediapipe as mp
+import time
+import datetime as dt
+
 from datetime import datetime
-from log_to_mongo import log_action
+from ultralytics import YOLO
+from collections import deque, namedtuple, OrderedDict 
+from keras.models import load_model
+from Database_system.models.action_model import Action
 
-# -------------------------------
-# ส่วนที่ 1: รันโมเดลและเตรียม input
-# TODO: ใส่โค้ดรันโมเดลของคุณที่นี่
-# ตัวอย่าง output ที่ควรได้จากโมเดล (ควรเป็น list ของ dict)
-# output_results = [
-#     {
-#         "person_id": "sky",
-#         "action": "carrying",
-#         "start_time": datetime(2025, 6, 10, 10, 0),
-#         "end_time": datetime(2025, 6, 10, 10, 5),
-#         "object_type": "ลัง"  # มี object_type เฉพาะ action ที่เป็น carrying
-#     },
-#     ...
-# ]
-output_results = []  # ← ลบ [] แล้วแทนที่ด้วยผลลัพธ์จริงจากโมเดล
+yolo_model = YOLO(
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/best_v3.pt"
+)
+action_model = load_model("/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/models/lstm_model.h5")
 
-# -------------------------------
-# ส่วนที่ 2: บันทึกผลลัพธ์ลง Database
+SHOULDER_WIDTH_M = 0.312
+SEQUENCE_LENGTH = 30
+ACTION_LABELS = ["standing", "moving", "carrying"]  # ปรับให้ตรงกับที่เทรน
+CONF_THRESHOLD   = 0.5
+DEBUG = False
 
-for result in output_results:
-    log_action(
-        result["person_id"],
-        result["action"],
-        result["start_time"],
-        result["end_time"],
-        object_type=result.get("object_type")  # ถ้าไม่มี object_type จะเป็น None
+mpDraw = mp.solutions.drawing_utils
+mpPose = mp.solutions.pose
+pose = mpPose.Pose()
+Point = namedtuple("Point", ["x", "y", "z"])
+
+last_action = {}   # track_id -> last action label 
+action_start = {}  # track_id -> datetime of start 
+buffers = {}       # track_id -> deque 
+
+SELECTED_JOINTS = [
+    14, 16, 20, 22, 18,      # Right arm
+    13, 15, 19, 17, 21,      # Left arm
+    24, 26, 28, 23, 25, 27,  # Legs
+    "center_shoulder", 0, "center_hip"
+]
+
+# cap = cv.VideoCapture(1)
+cap = cv.VideoCapture("/Users/balast/Downloads/test_video.mp4")
+pTime = 0
+
+def calculate_m_per_pixel(l_sh: Point, r_sh: Point, img_w: int, img_h: int) -> float:
+    dx = (l_sh.x - r_sh.x) * img_w
+    dy = (l_sh.y - r_sh.y) * img_h
+    dist = np.hypot(dx, dy)
+    return (SHOULDER_WIDTH_M / dist) if dist else 1.0
+
+def get_midpoint(a: Point, b: Point) -> Point:
+    return Point((a.x + b.x) / 2,
+                 (a.y + b.y) / 2,
+                 (a.z + b.z) / 2)
+
+def normalize_to_ntu(landmarks, img_w: int, img_h: int):
+    """
+    Normalize mediapipe landmarks to NTU coordinate system:
+    - center at hip midpoint
+    - invert y-axis
+    - scale to real-world meters
+    """
+    l_sh = landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value]
+    r_sh = landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value]
+    mpp = calculate_m_per_pixel(l_sh, r_sh, img_w, img_h)
+
+    l_hip = landmarks[mpPose.PoseLandmark.LEFT_HIP.value]
+    r_hip = landmarks[mpPose.PoseLandmark.RIGHT_HIP.value]
+    hip_c = get_midpoint(l_hip, r_hip)
+    sh_c = get_midpoint(l_sh, r_sh)
+
+    joints_list = []
+    for j in SELECTED_JOINTS:
+        p = None
+        if isinstance(j, int):
+            p = landmarks[j]
+        elif j == "center_shoulder":
+            p = sh_c
+        else:  # center_hip
+            p = hip_c
+
+        x_px = p.x * img_w
+        y_px = p.y * img_h
+        z_px = p.z * img_w
+
+        cx = hip_c.x * img_w
+        cy = hip_c.y * img_h
+
+        x_m = (x_px - cx) * mpp
+        y_m = -(y_px - cy) * mpp
+        z_m = z_px * mpp
+
+        joints_list.append([x_m, y_m, z_m])
+
+    return np.array(joints_list), mpp
+
+def predict_action(buffer: deque, model) -> str:
+    seq = np.array(buffer).reshape(1, SEQUENCE_LENGTH, -1)
+    pred = model.predict(seq, verbose=0)
+    return ACTION_LABELS[int(np.argmax(pred))]
+
+def log_action(person_id, action, start_time, end_time, object_type=None):
+    act = Action(
+        person_id=person_id,
+        action=action,
+        object_type=object_type,
+        start_time=start_time,
+        end_time=end_time,
+        created_at=datetime.utcnow(),
     )
+    act.save()
+    print("✅ Logged Action:", person_id, action, object_type)
 
-print("✅ บันทึกข้อมูลจากโมเดลเสร็จสิ้น")
+while cap.isOpened():
+    success, frame = cap.read()
+    if not success:
+        continue
+
+    yolo_results = yolo_model.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
+    
+    for box in yolo_results.boxes:
+        conf = box.conf[0].item()
+        cls = int(box.cls[0].item())  # ดึง index ของคลาสที่ตรวจพบเจอ
+        label = yolo_model.names[cls]
+
+        if conf < CONF_THRESHOLD:
+            continue
+        
+        track_id = int(box.id[0]) if box.id is not None else -1 
+        print(track_id)
+
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        if label == 'human':
+            if track_id not in buffers:
+                buffers[track_id] = deque(maxlen=SEQUENCE_LENGTH)
+            
+            if track_id not in last_action:
+                last_action[track_id] = None 
+                action_start[track_id] = None
+            
+            roi = frame[y1:y2, x1:x2]
+            if roi.size == 0:
+                continue
+
+            roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
+            pose_results = pose.process(roi_rgb)
+            if not pose_results.pose_landmarks:
+                continue
+            
+            mpDraw.draw_landmarks(roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS)
+            h_roi, w_roi, _ = roi.shape
+            lm = pose_results.pose_landmarks.landmark
+            ntu_pose, mpp = normalize_to_ntu(lm, w_roi, h_roi)
+            buffers[track_id].append(ntu_pose)
+            
+            if len(buffers[track_id]) == SEQUENCE_LENGTH:
+                action_label = predict_action(buffers[track_id], action_model)
+                now = dt.datetime.now()
+
+                if action_label != last_action[track_id]:
+                    if last_action[track_id]:
+                        log_action(
+                            person_id=str(track_id),
+                            action=last_action[track_id], 
+                            start_time=action_start[track_id],
+                            end_time=now,
+                            object_type=None # หรือใส่ label ที่ detect ได้ก็ได้ 
+                        )
+                    last_action[track_id] = action_label
+                    action_start[track_id] = now     
+                
+                cv.putText(
+                frame,
+                f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label}",
+                (x1, y1 - 10),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.3,
+                (255, 0, 0),
+                1,
+            )
+        
+        else:
+            cv.putText(
+                frame,
+                f"ID:{track_id} | {label} {conf:.2f}",
+                (x1, y1 - 10),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.3,
+                (255, 0, 0),
+                1,
+            )
+            
+
+    cTime = time.time()
+    fps = 1 / (cTime - pTime)
+    pTime = cTime
+
+    cv.putText(frame, f"FPS: {int(fps)}", (70, 50), cv.FONT_HERSHEY_PLAIN, 3, (0, 0, 255), 3)
+
+    cv.imshow("Multi-Person pose", frame)
+    if cv.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+cv.destroyAllWindows()
