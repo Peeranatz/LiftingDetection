@@ -140,8 +140,8 @@ def index():
                                     <td>{{a.person_id}}</td>
                                     <td>{{a.action}}</td>
                                     <td>{{a.object_type or '-'}}</td>
-                                    <td>{{a.start_time.strftime('%d/%m/%Y %H:%M')}}</td>
-                                    <td>{{a.end_time.strftime('%d/%m/%Y %H:%M')}}</td>
+                                    <td>{{a.start_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
+<td>{{a.end_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
