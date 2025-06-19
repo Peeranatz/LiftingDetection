@@ -20,17 +20,19 @@ CONF_THRESHOLD = 0.5
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
-pose = mpPose.Pose(
-    static_image_mode=False,
-    model_complexity=1,
-    smooth_landmarks=True,  # <== เปิดตัวนี้เลย
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7,
-)
+# pose = mpPose.Pose(
+#     static_image_mode=False,
+#     model_complexity=1,
+#     smooth_landmarks=True,  # <== เปิดตัวนี้เลย
+#     min_detection_confidence=0.7,
+#     min_tracking_confidence=0.7,
+# )
 
 last_action = {}  # track_id -> last action label
 action_start = {}  # track_id -> datetime of start
 buffers = {}  # track_id -> deque
+
+pose_instances = {}  # track_id -> Pose object
 
 target_id = 1
 debug_buffer = list()
@@ -47,7 +49,7 @@ SELECTED_JOINTS = [
 ]
 # cap = cv.VideoCapture(0)
 cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_2.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video.mp4"
 )
 pTime = 0
 
@@ -61,7 +63,7 @@ def collect_pose_landmarks(buffer: deque, landmarks):
     buffer.append(np.array(pose_array))
 
 
-def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
+def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
     if len(buffer) < 10:
         return "unknown"
 
@@ -69,11 +71,23 @@ def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
     stds = np.std(arr, axis=0)
 
     avg_std = np.mean(stds)
-    print("Average Standard: {}".format(avg_std))
     if avg_std < std_threshold:
         return "standing", avg_std
     else:
         return "moving", avg_std
+
+
+def expand_bbox(x1, y1, x2, y2, img_w, img_h, padding_ratio=0.1):
+    w = x2 - x1
+    h = y2 - y1
+    pad_w = int(w * padding_ratio)
+    pad_h = int(h * padding_ratio)
+
+    nx1 = max(0, x1 - pad_w)
+    ny1 = max(0, y1 - pad_h)
+    nx2 = min(img_w, x2 + pad_w)
+    ny2 = min(img_h, y2 + pad_h)
+    return nx1, ny1, nx2, ny2
 
 
 def plot_joint_std(buffer: deque):
@@ -133,6 +147,7 @@ while cap.isOpened():
         print(track_id)
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
         cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
         if label == "human":
@@ -148,7 +163,16 @@ while cap.isOpened():
                 continue
 
             roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
-            pose_results = pose.process(roi_rgb)
+
+            if track_id not in pose_instances:
+                pose_instances[track_id] = mpPose.Pose(
+                    static_image_mode=False,
+                    model_complexity=1,
+                    smooth_landmarks=True,
+                    min_detection_confidence=0.7,
+                    min_tracking_confidence=0.7,
+                )
+            pose_results = pose_instances[track_id].process(roi_rgb)
             if not pose_results.pose_landmarks:
                 continue
 
@@ -164,7 +188,11 @@ while cap.isOpened():
 
             if len(buffers[track_id]) == SEQUENCE_LENGTH:
                 action_label, avg = get_action(buffers[track_id])
-                print("Track ID: {} | Action = {}".format(track_id, action_label))
+                print(
+                    "Track ID: {} | Action = {} | Avg = {}".format(
+                        track_id, action_label, avg
+                    )
+                )
                 now = dt.datetime.now()
 
                 if action_label != last_action[track_id]:
@@ -184,9 +212,9 @@ while cap.isOpened():
                     f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
                     (x1, y1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
-                    1,
+                    0.3,
                     (255, 0, 0),
-                    3,
+                    1,
                 )
 
         else:
