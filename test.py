@@ -31,6 +31,7 @@ pose = mpPose.Pose(
 last_action = {}  # track_id -> last action label
 action_start = {}  # track_id -> datetime of start
 buffers = {}  # track_id -> deque
+prev_points = {}  # track_id -> {joint_index: np.array([x, y])}
 
 target_id = 1
 debug_buffer = list()
@@ -47,18 +48,36 @@ SELECTED_JOINTS = [
 ]
 # cap = cv.VideoCapture(0)
 cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_2.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_3.mp4"
 )
 pTime = 0
 
 
-def collect_pose_landmarks(buffer: deque, landmarks):
-    pose_array = []
-    for j in SELECTED_JOINTS:
-        p = landmarks[j]
-        pose_array.append([p.x, p.y])
+def smooth_point(new_pt, prev_pt, alpha=0.3):
+    return alpha * new_pt + (1 - alpha) * prev_pt
 
-    buffer.append(np.array(pose_array))
+
+def collect_pose_landmarks(buffer: deque, landmarks):
+    smoothed_pose = []
+
+    if track_id not in prev_points:
+        prev_points[track_id] = {}
+
+    for j in SELECTED_JOINTS:
+        try:
+            pt = landmarks[j]
+        except IndexError:
+            print("⚠️ Joint {} not found".format(j))
+            continue
+
+        if j in prev_points[track_id]:
+            prev = prev_points[track_id][j]
+            pt = smooth_point(pt, prev)
+
+        prev_points[track_id][j] = pt
+        smoothed_pose.append(pt)
+
+    buffer.append(np.array(smoothed_pose))
 
 
 def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
@@ -74,6 +93,19 @@ def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
         return "standing", avg_std
     else:
         return "moving", avg_std
+
+
+def expand_bbox(x1, y1, x2, y2, img_w, img_h, padding_ratio=0.1):
+    w = x2 - x1
+    h = y2 - y1
+    pad_w = int(w * padding_ratio)
+    pad_h = int(h * padding_ratio)
+
+    nx1 = max(0, x1 - pad_w)
+    ny1 = max(0, y1 - pad_h)
+    nx2 = min(img_w, x2 + pad_w)
+    ny2 = min(img_h, y2 + pad_h)
+    return nx1, ny1, nx2, ny2
 
 
 def plot_joint_std(buffer: deque):
@@ -133,6 +165,7 @@ while cap.isOpened():
         print(track_id)
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
         cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
         if label == "human":
@@ -146,16 +179,17 @@ while cap.isOpened():
             roi = frame[y1:y2, x1:x2]
             if roi.size == 0:
                 continue
+            roi_resized = cv.resize(roi, (224, 224))
 
-            roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
-            pose_results = pose.process(roi_rgb)
+            roi_resized_rgb = cv.cvtColor(roi_resized, cv.COLOR_BGR2RGB)
+            pose_results = pose.process(roi_resized_rgb)
             if not pose_results.pose_landmarks:
                 continue
 
             mpDraw.draw_landmarks(
-                roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS
+                roi_resized, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS
             )
-            h_roi, w_roi, _ = roi.shape
+            h_roi_resized, w_roi_resized, _ = roi_resized.shape
             lm = pose_results.pose_landmarks.landmark
             collect_pose_landmarks(buffers[track_id], lm)
 
