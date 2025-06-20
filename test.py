@@ -47,10 +47,10 @@ SELECTED_JOINTS = [
     31,
     32,  # left foot index, right foot index
 ]
-# cap = cv.VideoCapture(0)
-cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video.mp4"
-)
+cap = cv.VideoCapture(0)
+# cap = cv.VideoCapture(
+#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_3.mp4"
+# )
 pTime = 0
 
 
@@ -63,7 +63,7 @@ def collect_pose_landmarks(buffer: deque, landmarks):
     buffer.append(np.array(pose_array))
 
 
-def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
+def get_action(buffer: deque, std_threshold: float = 0.022) -> str:
     if len(buffer) < 10:
         return "unknown"
 
@@ -147,7 +147,7 @@ while cap.isOpened():
         print(track_id)
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
+        # x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
         cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
         if label == "human":
@@ -212,9 +212,9 @@ while cap.isOpened():
                     f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
                     (x1, y1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
-                    0.3,
-                    (255, 0, 0),
                     1,
+                    (255, 0, 0),
+                    3,
                 )
 
         else:
@@ -223,7 +223,7 @@ while cap.isOpened():
                 f"ID:{track_id} | {label} {conf:.2f}",
                 (x1, y1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
-                0.3,
+                1,
                 (255, 0, 0),
                 1,
             )
