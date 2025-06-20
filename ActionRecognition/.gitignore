@@ -5,3 +5,7 @@ data/raw/
 # processed data ที่ไม่ต้องการ commit
 data/processed/*.npz
 !data/processed/README.md
+
+__pycache__/
+*.pyc
+# 
