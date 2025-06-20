@@ -20,21 +20,15 @@ CONF_THRESHOLD = 0.5
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
-pose = mpPose.Pose(
-    static_image_mode=False,
-    model_complexity=1,
-    smooth_landmarks=True,  # <== เปิดตัวนี้เลย
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7,
-)
 
 last_action = {}  # track_id -> last action label
 action_start = {}  # track_id -> datetime of start
 buffers = {}  # track_id -> deque
-prev_points = {}  # track_id -> {joint_index: np.array([x, y])}
 
-target_id = 1
-debug_buffer = list()
+pose_instances = {}  # track_id -> Pose object
+
+# target_id = 1
+# debug_buffer = list()
 
 SELECTED_JOINTS = [
     25,
@@ -46,41 +40,70 @@ SELECTED_JOINTS = [
     31,
     32,  # left foot index, right foot index
 ]
-# cap = cv.VideoCapture(0)
-cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_3.mp4"
-)
+cap = cv.VideoCapture(0)
+# cap = cv.VideoCapture(
+#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
+# )
 pTime = 0
 
 
-def smooth_point(new_pt, prev_pt, alpha=0.3):
-    return alpha * new_pt + (1 - alpha) * prev_pt
+def is_hand_in_box(lms, person_box, box, img_frame_w, img_frame_h):
+    px1, py1, px2, py2 = person_box
+    roi_w = px2 - px1
+    roi_h = py2 - py1
+
+    for i in [15, 16]:  # LEFT_WRIST, RIGHT_WRIST
+        # แปลง normalized ROI → พิกัด full-frame
+        x = int(px1 + lms[i].x * roi_w)
+        y = int(py1 + lms[i].y * roi_h)
+        # เช็คว่าอยู่ในกล่อง object ไหม
+        if box[0] <= x <= box[2] and box[1] <= y <= box[3]:
+            return True
+    return False
+
+
+def is_box_fully_inside_person(person_box, object_box):
+    bx1, by1, bx2, by2 = object_box
+    px1, py1, px2, py2 = person_box
+    return bx1 >= px1 and by1 >= py1 and bx2 <= px2 and by2 <= py2
+
+
+def compute_iou(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+
+    interW = max(0, xB - xA)
+    interH = max(0, yB - yA)
+    interArea = interW * interH
+
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+    return interArea / float(boxAArea + boxBArea - interArea + 1e-6)
+
+
+def is_carrying(person_box, object_boxes, iou_threshold: float = 0.03):
+    for obj in object_boxes:
+        iou = compute_iou(person_box, obj)
+        print("IOU:", iou)
+        if compute_iou(person_box, obj) > iou_threshold:
+            return True
+
+    return False
 
 
 def collect_pose_landmarks(buffer: deque, landmarks):
-    smoothed_pose = []
-
-    if track_id not in prev_points:
-        prev_points[track_id] = {}
-
+    pose_array = []
     for j in SELECTED_JOINTS:
-        try:
-            pt = landmarks[j]
-        except IndexError:
-            print("⚠️ Joint {} not found".format(j))
-            continue
+        p = landmarks[j]
+        pose_array.append([p.x, p.y])
 
-        if j in prev_points[track_id]:
-            prev = prev_points[track_id][j]
-            pt = smooth_point(pt, prev)
-
-        prev_points[track_id][j] = pt
-        smoothed_pose.append(pt)
-
-    buffer.append(np.array(smoothed_pose))
+    buffer.append(np.array(pose_array))
 
 
-def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
+def get_action(buffer: deque, std_threshold: float = 0.022) -> str:
     if len(buffer) < 10:
         return "unknown"
 
@@ -88,7 +111,6 @@ def get_action(buffer: deque, std_threshold: float = 0.02) -> str:
     stds = np.std(arr, axis=0)
 
     avg_std = np.mean(stds)
-    print("Average Standard: {}".format(avg_std))
     if avg_std < std_threshold:
         return "standing", avg_std
     else:
@@ -102,9 +124,11 @@ def expand_bbox(x1, y1, x2, y2, img_w, img_h, padding_ratio=0.1):
     pad_h = int(h * padding_ratio)
 
     nx1 = max(0, x1 - pad_w)
-    ny1 = max(0, y1 - pad_h)
+    # ny1 = max(0, y1 - pad_h)
+    ny1 = y1
     nx2 = min(img_w, x2 + pad_w)
-    ny2 = min(img_h, y2 + pad_h)
+    # ny2 = min(img_h, y2 + pad_h)
+    ny2 = y2
     return nx1, ny1, nx2, ny2
 
 
@@ -153,6 +177,8 @@ while cap.isOpened():
         source=frame, stream=False, tracker="bytetrack.yaml"
     )[0]
 
+    object_boxes = []
+
     for box in yolo_results.boxes:
         conf = box.conf[0].item()
         cls = int(box.cls[0].item())  # ดึง index ของคลาสที่ตรวจพบเจอ
@@ -162,13 +188,29 @@ while cap.isOpened():
             continue
 
         track_id = int(box.id[0]) if box.id is not None else -1
-        print(track_id)
+        # print(track_id)
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
-        cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        # x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
+
+        if label == "box":
+            cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            object_boxes.append((x1, y1, x2, y2))
+            cv.putText(
+                frame,
+                f"ID:{track_id} | {label} {conf:.2f}",
+                (x1, y1 - 10),
+                cv.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 165, 255),
+                3,
+            )
+            continue
 
         if label == "human":
+            x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
+            cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            person_box = (x1, y1, x2, y2)
             if track_id not in buffers:
                 buffers[track_id] = deque(maxlen=SEQUENCE_LENGTH)
 
@@ -179,26 +221,55 @@ while cap.isOpened():
             roi = frame[y1:y2, x1:x2]
             if roi.size == 0:
                 continue
-            roi_resized = cv.resize(roi, (224, 224))
 
-            roi_resized_rgb = cv.cvtColor(roi_resized, cv.COLOR_BGR2RGB)
-            pose_results = pose.process(roi_resized_rgb)
+            roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
+
+            if track_id not in pose_instances:
+                pose_instances[track_id] = mpPose.Pose(
+                    static_image_mode=False,
+                    model_complexity=1,
+                    smooth_landmarks=True,
+                    min_detection_confidence=0.7,
+                    min_tracking_confidence=0.7,
+                )
+            pose_results = pose_instances[track_id].process(roi_rgb)
             if not pose_results.pose_landmarks:
                 continue
 
             mpDraw.draw_landmarks(
-                roi_resized, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS
+                roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS
             )
-            h_roi_resized, w_roi_resized, _ = roi_resized.shape
+            h_roi, w_roi, _ = roi.shape
             lm = pose_results.pose_landmarks.landmark
             collect_pose_landmarks(buffers[track_id], lm)
 
-            if track_id == target_id:
-                debug_buffer.append(buffers[track_id][-1])
+            # if track_id == target_id:
+            #     debug_buffer.append(buffers[track_id][-1])
+
+            carring = False
+            for obj_box in object_boxes:
+                if (
+                    is_box_fully_inside_person(person_box, obj_box)
+                    or compute_iou(person_box, obj_box) > 0.03
+                    or is_hand_in_box(
+                        lm, person_box, obj_box, frame.shape[1], frame.shape[0]
+                    )
+                ):
+                    carrying = True
+                    break
 
             if len(buffers[track_id]) == SEQUENCE_LENGTH:
-                action_label, avg = get_action(buffers[track_id])
-                print("Track ID: {} | Action = {}".format(track_id, action_label))
+                if carring:
+                    action_label = "carrying"
+                    # print("Track ID: {} | Action = {}".format(track_id, action_label))
+                else:
+                    action_label, avg = get_action(buffers[track_id])
+                    # print(
+                    #     "Track ID: {} | Action = {} | Avg = {}".format(
+                    #         track_id, action_label, avg
+                    #     )
+                    # )
+
                 now = dt.datetime.now()
 
                 if action_label != last_action[track_id]:
@@ -215,24 +286,13 @@ while cap.isOpened():
 
                 cv.putText(
                     frame,
-                    f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
+                    f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label}",
                     (x1, y1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
                     1,
                     (255, 0, 0),
                     3,
                 )
-
-        else:
-            cv.putText(
-                frame,
-                f"ID:{track_id} | {label} {conf:.2f}",
-                (x1, y1 - 10),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.3,
-                (255, 0, 0),
-                1,
-            )
 
     cTime = time.time()
     fps = 1 / (cTime - pTime)
@@ -249,7 +309,7 @@ while cap.isOpened():
 cap.release()
 cv.destroyAllWindows()
 
-if len(debug_buffer) >= 10:
-    plot_joint_std(debug_buffer)
-else:
-    print("ยังเก็บ buffer ไม่พอจะ plot")
+# if len(debug_buffer) >= 10:
+#     plot_joint_std(debug_buffer)
+# else:
+#     print("ยังเก็บ buffer ไม่พอจะ plot")
