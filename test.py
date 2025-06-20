@@ -47,6 +47,7 @@ SELECTED_JOINTS = [
     31,
     32,  # left foot index, right foot index
 ]
+cap = cv.VideoCapture(0)
 # cap = cv.VideoCapture(0)
 cap = cv.VideoCapture(
     "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video.mp4"
@@ -214,7 +215,7 @@ while cap.isOpened():
                     cv.FONT_HERSHEY_SIMPLEX,
                     0.3,
                     (255, 0, 0),
-                    1,
+                    3,
                 )
 
         else:
