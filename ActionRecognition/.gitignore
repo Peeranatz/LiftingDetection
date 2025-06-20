@@ -6,6 +6,9 @@ data/raw/
 data/processed/*.npz
 !data/processed/README.md
 
+**/__pycache__/
 __pycache__/
 *.pyc
+Database_system/models/__pycache__/
+C:/Users/ASUS/Documents/GitHub/LiftingDetection/Database_system/models/__pycache__/
 # 
