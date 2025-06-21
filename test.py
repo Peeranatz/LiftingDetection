@@ -11,8 +11,11 @@ from collections import deque, namedtuple, OrderedDict
 from keras.models import load_model
 from Database_system.models.action_model import Action
 
-yolo_model = YOLO(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/best_v3.pt"
+yolo_human = YOLO(
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt"
+)
+yolo_box = YOLO(
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt"
 )
 
 SEQUENCE_LENGTH = 30
@@ -20,22 +23,14 @@ CONF_THRESHOLD = 0.5
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
-# pose = mpPose.Pose(
-#     static_image_mode=False,
-#     model_complexity=1,
-#     smooth_landmarks=True,  # <== เปิดตัวนี้เลย
-#     min_detection_confidence=0.7,
-#     min_tracking_confidence=0.7,
-# )
 
 last_action = {}  # track_id -> last action label
 action_start = {}  # track_id -> datetime of start
 buffers = {}  # track_id -> deque
-
 pose_instances = {}  # track_id -> Pose object
 
-target_id = 1
-debug_buffer = list()
+# target_id = 1
+# debug_buffer = list()
 
 SELECTED_JOINTS = [
     25,
@@ -47,13 +42,6 @@ SELECTED_JOINTS = [
     31,
     32,  # left foot index, right foot index
 ]
-cap = cv.VideoCapture(0)
-# cap = cv.VideoCapture(0)
-cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video.mp4"
-)
-pTime = 0
-
 
 def collect_pose_landmarks(buffer: deque, landmarks):
     pose_array = []
@@ -69,13 +57,26 @@ def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
         return "unknown"
 
     arr = np.array(buffer)
-    stds = np.std(arr, axis=0)
+    avg_std = np.mean(np.std(arr, axis=0))
+    
+    return ("standing" if avg_std < std_threshold else "moving"), avg_std
 
-    avg_std = np.mean(stds)
-    if avg_std < std_threshold:
-        return "standing", avg_std
-    else:
-        return "moving", avg_std
+def iou(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+    iou_val = interArea / float(boxAArea + boxBArea - interArea)
+    return iou_val
+
+def point_in_bbox(x, y, bbox):
+    x1, y1, x2, y2 = bbox 
+    return x1 <= x <= x2 and y1 <= y <= y2
 
 
 def expand_bbox(x1, y1, x2, y2, img_w, img_h, padding_ratio=0.1):
@@ -126,109 +127,105 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
     act.save()
     print("✅ Logged Action:", person_id, action, object_type)
 
+# cap = cv.VideoCapture(0)
+cap = cv.VideoCapture(
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lif6.mp4"
+)
+pTime = 0
 
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
         continue
-
-    yolo_results = yolo_model.track(
-        source=frame, stream=False, tracker="bytetrack.yaml"
-    )[0]
-
-    for box in yolo_results.boxes:
-        conf = box.conf[0].item()
-        cls = int(box.cls[0].item())  # ดึง index ของคลาสที่ตรวจพบเจอ
-        label = yolo_model.names[cls]
-
-        if conf < CONF_THRESHOLD:
+    
+    # Detect humans
+    human_res = yolo_human.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
+    human_bboxes = {}
+    for box in human_res.boxes:
+        hconf = box.conf[0].item()
+        if hconf < CONF_THRESHOLD:
             continue
 
         track_id = int(box.id[0]) if box.id is not None else -1
-        print(track_id)
+        hx1, hy1, hx2, hy2 = map(int, box.xyxy[0])
+        # x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
+        human_bboxes[track_id] = (hx1,hy1,hx2,hy2)
+        cv.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 255, 0), 2)
 
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
-        cv.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        if label == "human":
-            if track_id not in buffers:
-                buffers[track_id] = deque(maxlen=SEQUENCE_LENGTH)
-
-            if track_id not in last_action:
-                last_action[track_id] = None
-                action_start[track_id] = None
-
-            roi = frame[y1:y2, x1:x2]
-            if roi.size == 0:
-                continue
-
-            roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
-
-            if track_id not in pose_instances:
-                pose_instances[track_id] = mpPose.Pose(
-                    static_image_mode=False,
-                    model_complexity=1,
-                    smooth_landmarks=True,
-                    min_detection_confidence=0.7,
-                    min_tracking_confidence=0.7,
-                )
-            pose_results = pose_instances[track_id].process(roi_rgb)
-            if not pose_results.pose_landmarks:
-                continue
-
-            mpDraw.draw_landmarks(
-                roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS
+        # เตรียม buffer ถ้ายังไม่มี
+        buffers.setdefault(track_id, deque(maxlen=SEQUENCE_LENGTH))
+        last_action.setdefault(track_id, None)
+        action_start.setdefault(track_id, None)
+        
+        if track_id not in pose_instances:
+            pose_instances[track_id] = mpPose.Pose(
+                static_image_mode=False,
+                model_complexity=1,
+                smooth_landmarks=True,
+                min_detection_confidence=0.7,
+                min_tracking_confidence=0.7,
             )
-            h_roi, w_roi, _ = roi.shape
-            lm = pose_results.pose_landmarks.landmark
-            collect_pose_landmarks(buffers[track_id], lm)
+        
+        # Pose ROI
+        roi = frame[hy1:hy2, hx1:hx2]
+        if roi.size == 0: continue
+        roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
+        pose_results = pose_instances[track_id].process(roi_rgb)
+        if not pose_results.pose_landmarks: continue
+        mpDraw.draw_landmarks(roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS)
+        lm = pose_results.pose_landmarks.landmark
+        collect_pose_landmarks(buffers[track_id], lm)
 
-            if track_id == target_id:
-                debug_buffer.append(buffers[track_id][-1])
-
-            if len(buffers[track_id]) == SEQUENCE_LENGTH:
-                action_label, avg = get_action(buffers[track_id])
-                print(
-                    "Track ID: {} | Action = {} | Avg = {}".format(
-                        track_id, action_label, avg
-                    )
-                )
-                now = dt.datetime.now()
-
-                if action_label != last_action[track_id]:
-                    if last_action[track_id]:
-                        log_action(
-                            person_id=str(track_id),
-                            action=last_action[track_id],
-                            start_time=action_start[track_id],
-                            end_time=now,
-                            object_type=None,  # หรือใส่ label ที่ detect ได้ก็ได้
-                        )
-                    last_action[track_id] = action_label
-                    action_start[track_id] = now
-
-                cv.putText(
-                    frame,
-                    f"ID:{track_id} | {label} {conf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
-                    (x1, y1 - 10),
-                    cv.FONT_HERSHEY_SIMPLEX,
-                    0.3,
-                    (255, 0, 0),
-                    3,
-                )
-
-        else:
+        if len(buffers[track_id]) == SEQUENCE_LENGTH:
+            action_label, avg = get_action(buffers[track_id])
+            now = dt.datetime.now()
+            
+            box_res = yolo_box.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
+            for box in box_res.boxes:
+                bconf = float(box.conf[0])
+                cls = int(box.cls[0])
+                label = box_res.names[cls]
+                bx1, by1, bx2, by2 = map(int, box.xyxy[0])
+                
+                # เตรียมจุดของกล่อง
+                points = [
+                    ((bx1 + bx2) // 2, (by1 + by2) // 2),  # center
+                    (bx1, by1),  # top-left
+                    (bx2, by1),  # top-right
+                    (bx1, by2),  # bottom-left
+                    (bx2, by2),  # bottom-right
+                    ((bx1 + bx2) // 2, by1),  # top-center
+                    ((bx1 + bx2) // 2, by2),  # bottom-center
+                    (bx1, (by1 + by2) // 2),  # middle-left
+                    (bx2, (by1 + by2) // 2),  # middle-right
+                ]
+                
+                matched = any(point_in_bbox(px, py, (hx1, hy1, hx2, hy2)) for (px, py) in points)
+                iou_val = iou([bx1, by1, bx2, by2], [hx1, hy1, hx2, hy2])
+                # print("IOU value (Box vs Human {}): {:.3f}".format(track_id, iou_val))
+                # print("Matched : {}".format(matched))
+                
+                cv.rectangle(frame, (bx1,by1), (bx2,by2), (255,0,0), 2)
+                cv.putText(frame,
+                        f"{label} {bconf:.2f}",
+                        (bx1, by1-5),
+                        cv.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
+                
+                if matched or iou_val > 0.1:
+                    action_label = "carrying"
+                    break  # ไม่ต้องเช็คกล่องอื่นแล้ว
+            
+            print("ID: {} | Action: {}".format(track_id, action_label))
             cv.putText(
                 frame,
-                f"ID:{track_id} | {label} {conf:.2f}",
-                (x1, y1 - 10),
+                f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
+                (hx1, hy1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
                 0.3,
                 (255, 0, 0),
                 1,
             )
-
+    
     cTime = time.time()
     fps = 1 / (cTime - pTime)
     pTime = cTime
@@ -243,8 +240,3 @@ while cap.isOpened():
 
 cap.release()
 cv.destroyAllWindows()
-
-if len(debug_buffer) >= 10:
-    plot_joint_std(debug_buffer)
-else:
-    print("ยังเก็บ buffer ไม่พอจะ plot")
