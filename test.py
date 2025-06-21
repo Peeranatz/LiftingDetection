@@ -20,14 +20,16 @@ yolo_box = YOLO(
 
 SEQUENCE_LENGTH = 30
 CONF_THRESHOLD = 0.5
+SMOOTH_FRAMES = 5  # number of frames for landmark smoothing
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
 
-last_action = {}  # track_id -> last action label
-action_start = {}  # track_id -> datetime of start
-buffers = {}  # track_id -> deque
-pose_instances = {}  # track_id -> Pose object
+last_action = {}       # track_id -> last action label
+action_start = {}      # track_id -> datetime of start
+buffers = {}           # track_id -> deque
+pose_instances = {}    # track_id -> Pose object
+landmark_history = {}  # track_id -> deque for smoothing landmarks
 
 # target_id = 1
 # debug_buffer = list()
@@ -129,7 +131,7 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
 
 # cap = cv.VideoCapture(0)
 cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lif6.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
 )
 pTime = 0
 
@@ -166,16 +168,42 @@ while cap.isOpened():
                 min_tracking_confidence=0.7,
             )
         
+        landmark_history.setdefault(track_id, deque(maxlen=SMOOTH_FRAMES))
+        
         # Pose ROI
         roi = frame[hy1:hy2, hx1:hx2]
         if roi.size == 0: continue
         roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
         pose_results = pose_instances[track_id].process(roi_rgb)
         if not pose_results.pose_landmarks: continue
-        mpDraw.draw_landmarks(roi, pose_results.pose_landmarks, mpPose.POSE_CONNECTIONS)
-        lm = pose_results.pose_landmarks.landmark
-        collect_pose_landmarks(buffers[track_id], lm)
-
+        lms = pose_results.pose_landmarks.landmark
+        collect_pose_landmarks(buffers[track_id], lms)
+        
+        # collect raw full landmarks for smoothing
+        raw_pts = np.array([(lm.x, lm.y) for lm in lms])
+        landmark_history[track_id].append(raw_pts)
+        
+        # smooth landmarks if available
+        if len(landmark_history[track_id]) > 0:
+            hist = np.stack(landmark_history[track_id], axis=0)
+            smooth_pts = np.mean(hist, axis=0)  # (33,2)
+        else:
+            smooth_pts = raw_pts
+        
+        # draw smoothed skeleton on ROI
+        for (start, end) in mpPose.POSE_CONNECTIONS:
+            x1n, y1n = smooth_pts[start]
+            x2n, y2n = smooth_pts[end]
+            p1 = mpDraw._normalized_to_pixel_coordinates(x1n, y1n, hx2-hx1, hy2-hy1)
+            p2 = mpDraw._normalized_to_pixel_coordinates(x2n, y2n, hx2-hx1, hy2-hy1)
+            if p1 and p2:
+                cv.line(roi, p1, p2, (0, 255, 255), 2)
+        for nx, ny in smooth_pts:
+            px, py = int(nx*(hx2-hx1)), int(ny*(hy2-hy1))
+            cv.circle(roi, (px, py), 3, (255, 0, 0), -1)
+            
+        action_label = "unknown"
+        avg =0
         if len(buffers[track_id]) == SEQUENCE_LENGTH:
             action_label, avg = get_action(buffers[track_id])
             now = dt.datetime.now()
