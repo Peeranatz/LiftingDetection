@@ -131,7 +131,7 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
 
 # cap = cv.VideoCapture(0)
 cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_many people.mp4"
 )
 pTime = 0
 
@@ -200,10 +200,11 @@ while cap.isOpened():
                 cv.line(roi, p1, p2, (0, 255, 255), 2)
         for nx, ny in smooth_pts:
             px, py = int(nx*(hx2-hx1)), int(ny*(hy2-hy1))
-            cv.circle(roi, (px, py), 3, (255, 0, 0), -1)
+            cv.circle(roi, (px, py), 3, (255, 255, 0), -1)
             
         action_label = "unknown"
-        avg =0
+        avg = 0
+        
         if len(buffers[track_id]) == SEQUENCE_LENGTH:
             action_label, avg = get_action(buffers[track_id])
             now = dt.datetime.now()
@@ -211,6 +212,9 @@ while cap.isOpened():
             box_res = yolo_box.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
             for box in box_res.boxes:
                 bconf = float(box.conf[0])
+                if bconf < CONF_THRESHOLD:
+                    continue
+                
                 cls = int(box.cls[0])
                 label = box_res.names[cls]
                 bx1, by1, bx2, by2 = map(int, box.xyxy[0])
