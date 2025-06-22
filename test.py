@@ -25,6 +25,7 @@ SMOOTH_FRAMES = 5  # number of frames for landmark smoothing
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
 
+# human_profile = {}     # track_id -> { last_seen, action, box_id }
 last_action = {}       # track_id -> last action label
 action_start = {}      # track_id -> datetime of start
 buffers = {}           # track_id -> deque
@@ -34,7 +35,7 @@ landmark_history = {}  # track_id -> deque for smoothing landmarks
 # target_id = 1
 # debug_buffer = list()
 
-SELECTED_JOINTS = [
+SELECTED_JOINTS = [11,12,13,14,15,16,17,18,19,20,21,22,23,24,
     25,
     26,  # left knee, right knee
     27,
@@ -61,7 +62,7 @@ def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
     arr = np.array(buffer)
     avg_std = np.mean(np.std(arr, axis=0))
     
-    return ("standing" if avg_std < std_threshold else "moving"), avg_std
+    return ("idle" if avg_std < std_threshold else "moving"), avg_std
 
 def iou(boxA, boxB):
     xA = max(boxA[0], boxB[0])
@@ -131,17 +132,21 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
 
 cap = cv.VideoCapture(1)
 # cap = cv.VideoCapture(
-#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_many people.mp4"
+#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
 # )
 pTime = 0
+frame_idx = 0
 
 while cap.isOpened():
     success, frame = cap.read()
+    frame = cv.flip(frame, 1)
     if not success:
         continue
     
+    frame_idx += 1
+
     # Detect humans
-    human_res = yolo_human.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
+    human_res = yolo_human.track(source=frame, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
     human_bboxes = {}
     for person in human_res.boxes:
         hconf = person.conf[0].item()
@@ -161,7 +166,7 @@ while cap.isOpened():
                 "area": area
             }
         cv.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 255, 0), 2)
-
+        
         # เตรียม buffer ถ้ายังไม่มี
         buffers.setdefault(track_id, deque(maxlen=SEQUENCE_LENGTH))
         last_action.setdefault(track_id, None)
@@ -217,7 +222,7 @@ while cap.isOpened():
             action_label, avg = get_action(buffers[track_id])
             now = dt.datetime.now()
             
-            box_res = yolo_box.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
+            box_res = yolo_box.track(source=frame, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
             for box in box_res.boxes:
                 bconf = float(box.conf[0])
                 if bconf < CONF_THRESHOLD:
@@ -256,26 +261,26 @@ while cap.isOpened():
                     break  # ไม่ต้องเช็คกล่องอื่นแล้ว
             
             if action_label == 'carrying':
-                print("ID: {} | Action: {} | Object type: {}".format(track_id, action_label, object_label))
+                # print("ID: {} | Action: {} | Object type: {}".format(track_id, action_label, object_label))
                 cv.putText(
                 frame,
                 f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Object: {object_label}",
                 (hx1, hy1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
-                0.3,
-                (255, 0, 0),
                 1,
+                (255, 0, 0),
+                3,
             )
             else:    
-                print("ID: {} | Action: {}".format(track_id, action_label))
+                # print("ID: {} | Action: {}".format(track_id, action_label))
                 cv.putText(
                     frame,
                     f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
                     (hx1, hy1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
-                    0.3,
-                    (255, 0, 0),
                     1,
+                    (255, 0, 0),
+                    3,
                 )
     
     cTime = time.time()
@@ -283,7 +288,7 @@ while cap.isOpened():
     pTime = cTime
 
     cv.putText(
-        frame, f"FPS: {int(fps)}", (70, 50), cv.FONT_HERSHEY_PLAIN, 3, (0, 0, 255), 3
+        frame, f"FPS: {int(fps)} | FRAME: {int(frame_idx)}", (70, 50), cv.FONT_HERSHEY_PLAIN, 3, (0, 0, 255), 3
     )
 
     cv.imshow("Multi-Person pose", frame)
