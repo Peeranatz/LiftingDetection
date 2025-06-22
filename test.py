@@ -21,9 +21,14 @@ yolo_box = YOLO(
 SEQUENCE_LENGTH = 30
 CONF_THRESHOLD = 0.5
 SMOOTH_FRAMES = 5  # number of frames for landmark smoothing
+MIN_VALID_FRAMES = 15
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
+
+id_logs = {}
+
+global_id_counter = 1
 
 # human_profile = {}     # track_id -> { last_seen, action, box_id }
 last_action = {}       # track_id -> last action label
@@ -31,6 +36,10 @@ action_start = {}      # track_id -> datetime of start
 buffers = {}           # track_id -> deque
 pose_instances = {}    # track_id -> Pose object
 landmark_history = {}  # track_id -> deque for smoothing landmarks
+
+known_tracks = {}   # track_id (from yolo) -> global_id
+last_seen = {}      # track_id -> timestamp
+timeout_frames = 30  # number of frames to forget track_id
 
 # target_id = 1
 # debug_buffer = list()
@@ -145,6 +154,7 @@ while cap.isOpened():
     
     frame_idx += 1
 
+    current_time = time.time()
     # Detect humans
     human_res = yolo_human.track(source=frame, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
     human_bboxes = {}
@@ -152,15 +162,38 @@ while cap.isOpened():
         hconf = person.conf[0].item()
         if hconf < CONF_THRESHOLD:
             continue
-
+        
         track_id = int(person.id[0]) if person.id is not None else -1
         hx1, hy1, hx2, hy2 = map(int, person.xyxy[0])
         # x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
         area = (hx2 - hx1) * (hy2 - hy1)
         
+        if track_id in known_tracks:
+            global_id = known_tracks[track_id]
+        else:
+            global_id = global_id_counter
+            known_tracks[track_id] = global_id
+            global_id_counter += 1
+            
+        last_seen[track_id] = frame_idx
+        
+        # เก็บข้อมูลเบื้องต้นของแต่ละ global_id
+        id_logs.setdefault(global_id, {
+            "actions": [],
+            "last_seen_frame": frame_idx,
+            "total_frames": 0,
+        })
+
+        # อัปเดตข้อมูลทุกเฟรมที่เจอ
+        id_logs[global_id]["last_seen_frame"] = frame_idx
+        id_logs[global_id]["total_frames"] += 1
+        
+        if id_logs[global_id]["total_frames"] < MIN_VALID_FRAMES:
+            continue
+                        
         # เก็บเฉพาะ box ที่ใหญ่สุดของ track_id นี้
-        if (track_id not in human_bboxes) or (area > human_bboxes[track_id]['area']):
-            human_bboxes[track_id] = {
+        if (global_id not in human_bboxes) or (area > human_bboxes[global_id]['area']):
+            human_bboxes[global_id] = {
                 "bbox": (hx1, hy1, hx2, hy2),
                 "conf": hconf,
                 "area": area
@@ -168,12 +201,12 @@ while cap.isOpened():
         cv.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 255, 0), 2)
         
         # เตรียม buffer ถ้ายังไม่มี
-        buffers.setdefault(track_id, deque(maxlen=SEQUENCE_LENGTH))
-        last_action.setdefault(track_id, None)
-        action_start.setdefault(track_id, None)
+        buffers.setdefault(global_id, deque(maxlen=SEQUENCE_LENGTH))
+        last_action.setdefault(global_id, None)
+        action_start.setdefault(global_id, None)
         
-        if track_id not in pose_instances:
-            pose_instances[track_id] = mpPose.Pose(
+        if global_id not in pose_instances:
+            pose_instances[global_id] = mpPose.Pose(
                 static_image_mode=False,
                 model_complexity=1,
                 smooth_landmarks=True,
@@ -181,24 +214,24 @@ while cap.isOpened():
                 min_tracking_confidence=0.7,
             )
         
-        landmark_history.setdefault(track_id, deque(maxlen=SMOOTH_FRAMES))
+        landmark_history.setdefault(global_id, deque(maxlen=SMOOTH_FRAMES))
         
         # Pose ROI
         roi = frame[hy1:hy2, hx1:hx2]
         if roi.size == 0: continue
         roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
-        pose_results = pose_instances[track_id].process(roi_rgb)
+        pose_results = pose_instances[global_id].process(roi_rgb)
         if not pose_results.pose_landmarks: continue
         lms = pose_results.pose_landmarks.landmark
-        collect_pose_landmarks(buffers[track_id], lms)
+        collect_pose_landmarks(buffers[global_id], lms)
         
         # collect raw full landmarks for smoothing
         raw_pts = np.array([(lm.x, lm.y) for lm in lms])
-        landmark_history[track_id].append(raw_pts)
+        landmark_history[global_id].append(raw_pts)
         
         # smooth landmarks if available
-        if len(landmark_history[track_id]) > 0:
-            hist = np.stack(landmark_history[track_id], axis=0)
+        if len(landmark_history[global_id]) > 0:
+            hist = np.stack(landmark_history[global_id], axis=0)
             smooth_pts = np.mean(hist, axis=0)  # (33,2)
         else:
             smooth_pts = raw_pts
@@ -218,8 +251,8 @@ while cap.isOpened():
         action_label = "unknown"
         avg = 0
         
-        if len(buffers[track_id]) == SEQUENCE_LENGTH:
-            action_label, avg = get_action(buffers[track_id])
+        if len(buffers[global_id]) == SEQUENCE_LENGTH:
+            action_label, avg = get_action(buffers[global_id])
             now = dt.datetime.now()
             
             box_res = yolo_box.track(source=frame, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
@@ -247,7 +280,7 @@ while cap.isOpened():
                 
                 matched = any(point_in_bbox(px, py, (hx1, hy1, hx2, hy2)) for (px, py) in points)
                 iou_val = iou([bx1, by1, bx2, by2], [hx1, hy1, hx2, hy2])
-                # print("IOU value (Box vs Human {}): {:.3f}".format(track_id, iou_val))
+                # print("IOU value (Box vs Human {}): {:.3f}".format(global_id, iou_val))
                 # print("Matched : {}".format(matched))
                 
                 cv.rectangle(frame, (bx1,by1), (bx2,by2), (255,0,0), 2)
@@ -260,11 +293,13 @@ while cap.isOpened():
                     action_label = "carrying"
                     break  # ไม่ต้องเช็คกล่องอื่นแล้ว
             
+            id_logs[global_id]["actions"].append(action_label)
+            
             if action_label == 'carrying':
-                # print("ID: {} | Action: {} | Object type: {}".format(track_id, action_label, object_label))
+                # print("ID: {} | Action: {} | Object type: {}".format(global_id, action_label, object_label))
                 cv.putText(
                 frame,
-                f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Object: {object_label}",
+                f"ID:{global_id} | {hconf:.2f} | Action: {action_label} | Object: {object_label}",
                 (hx1, hy1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
                 1,
@@ -272,17 +307,44 @@ while cap.isOpened():
                 3,
             )
             else:    
-                # print("ID: {} | Action: {}".format(track_id, action_label))
+                # print("ID: {} | Action: {}".format(global_id, action_label))
                 cv.putText(
                     frame,
-                    f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
+                    f"ID:{global_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
                     (hx1, hy1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
                     1,
                     (255, 0, 0),
                     3,
                 )
+        else:
+            cv.putText(
+                    frame,
+                    f"ID:{global_id} | {hconf:.2f}",
+                    (hx1, hy1 - 10),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 0, 0),
+                    3,
+                )
+            
     
+    to_delete = []
+    for tid, t in last_seen.items():
+        if frame_idx - t > timeout_frames:
+            to_delete.append(tid)
+
+    for tid in to_delete:
+        gid = known_tracks.get(tid)
+        known_tracks.pop(tid, None)
+        last_seen.pop(tid, None)
+        if gid is not None:
+            buffers.pop(gid, None)
+            pose_instances.pop(gid, None)
+            landmark_history.pop(gid, None)
+            last_action.pop(gid, None)
+            action_start.pop(gid, None)
+        
     cTime = time.time()
     fps = 1 / (cTime - pTime)
     pTime = cTime
@@ -297,3 +359,15 @@ while cap.isOpened():
 
 cap.release()
 cv.destroyAllWindows()
+
+print("Final Action Logs:")
+for gid, info in id_logs.items():
+    if info["total_frames"] < MIN_VALID_FRAMES:
+        continue
+    
+    print(f"ID {gid} | Last seen frame: {info['last_seen_frame']} | Total frames: {info['total_frames']}")
+    if info["actions"]:
+        print(f"Actions: {info['actions']}")
+    else:
+        print("Actions: [No actions recorded]")
+    print("-" * 50)
