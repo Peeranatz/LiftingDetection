@@ -129,10 +129,10 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
     act.save()
     print("✅ Logged Action:", person_id, action, object_type)
 
-# cap = cv.VideoCapture(0)
-cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_many people.mp4"
-)
+cap = cv.VideoCapture(1)
+# cap = cv.VideoCapture(
+#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_many people.mp4"
+# )
 pTime = 0
 
 while cap.isOpened():
@@ -143,15 +143,23 @@ while cap.isOpened():
     # Detect humans
     human_res = yolo_human.track(source=frame, stream=False, tracker="bytetrack.yaml")[0]
     human_bboxes = {}
-    for box in human_res.boxes:
-        hconf = box.conf[0].item()
+    for person in human_res.boxes:
+        hconf = person.conf[0].item()
         if hconf < CONF_THRESHOLD:
             continue
 
-        track_id = int(box.id[0]) if box.id is not None else -1
-        hx1, hy1, hx2, hy2 = map(int, box.xyxy[0])
+        track_id = int(person.id[0]) if person.id is not None else -1
+        hx1, hy1, hx2, hy2 = map(int, person.xyxy[0])
         # x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
-        human_bboxes[track_id] = (hx1,hy1,hx2,hy2)
+        area = (hx2 - hx1) * (hy2 - hy1)
+        
+        # เก็บเฉพาะ box ที่ใหญ่สุดของ track_id นี้
+        if (track_id not in human_bboxes) or (area > human_bboxes[track_id]['area']):
+            human_bboxes[track_id] = {
+                "bbox": (hx1, hy1, hx2, hy2),
+                "conf": hconf,
+                "area": area
+            }
         cv.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 255, 0), 2)
 
         # เตรียม buffer ถ้ายังไม่มี
@@ -216,7 +224,7 @@ while cap.isOpened():
                     continue
                 
                 cls = int(box.cls[0])
-                label = box_res.names[cls]
+                object_label = box_res.names[cls]
                 bx1, by1, bx2, by2 = map(int, box.xyxy[0])
                 
                 # เตรียมจุดของกล่อง
@@ -239,7 +247,7 @@ while cap.isOpened():
                 
                 cv.rectangle(frame, (bx1,by1), (bx2,by2), (255,0,0), 2)
                 cv.putText(frame,
-                        f"{label} {bconf:.2f}",
+                        f"{object_label} {bconf:.2f}",
                         (bx1, by1-5),
                         cv.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
                 
@@ -247,16 +255,28 @@ while cap.isOpened():
                     action_label = "carrying"
                     break  # ไม่ต้องเช็คกล่องอื่นแล้ว
             
-            print("ID: {} | Action: {}".format(track_id, action_label))
-            cv.putText(
+            if action_label == 'carrying':
+                print("ID: {} | Action: {} | Object type: {}".format(track_id, action_label, object_label))
+                cv.putText(
                 frame,
-                f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
+                f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Object: {object_label}",
                 (hx1, hy1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
                 0.3,
                 (255, 0, 0),
                 1,
             )
+            else:    
+                print("ID: {} | Action: {}".format(track_id, action_label))
+                cv.putText(
+                    frame,
+                    f"ID:{track_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
+                    (hx1, hy1 - 10),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.3,
+                    (255, 0, 0),
+                    1,
+                )
     
     cTime = time.time()
     fps = 1 / (cTime - pTime)
