@@ -14,6 +14,7 @@ def index():
     person_id = request.values.get("person_id", "")
     action = request.values.get("action", "")
     object_type = request.values.get("object_type", "")
+    object_id = request.values.get("object_id", "")
     timestamp = request.values.get("timestamp", "")
 
     # สร้าง dictionary สำหรับเก็บเงื่อนไข query ของ action
@@ -24,6 +25,8 @@ def index():
         action_query["action"] = action
     if object_type:
         action_query["object_type"] = object_type
+    if object_id:
+        action_query["object_id"] = object_id
     if timestamp:
         from datetime import datetime, timedelta
         try:
@@ -112,6 +115,10 @@ def index():
                     <input type="text" class="form-control" id="object_type" name="object_type" value="{{request.values.get('object_type','')}}">
                 </div>
                 <div class="col-md-3">
+                    <label for="object_id" class="form-label">Object ID</label>
+                    <input type="text" class="form-control" id="object_id" name="object_id" value="{{request.values.get('object_id','')}}">
+                </div>
+                <div class="col-md-3">
                     <label for="timestamp" class="form-label">วันที่</label>
                     <input type="date" class="form-control" id="timestamp" name="timestamp" value="{{request.values.get('timestamp','')}}">
                 </div>
@@ -130,6 +137,7 @@ def index():
                                     <th>Person ID</th>
                                     <th>Action</th>
                                     <th>Object Type</th>
+                                    <th>Object ID</th>
                                     <th>Start Time</th>
                                     <th>End Time</th>
                                 </tr>
@@ -140,6 +148,7 @@ def index():
                                     <td>{{a.person_id}}</td>
                                     <td>{{a.action}}</td>
                                     <td>{{a.object_type or '-'}}</td>
+                                    <td>{{a.object_id or '-'}}</td>
                                     <td>{{a.start_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
                                     <td>{{a.end_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
                                 </tr>
@@ -181,7 +190,8 @@ def object_count():
                 if object_type:
                     query["object_type"] = object_type
                 objects = Action.objects(**query)
-                count = objects.count()
+                # นับ object_id ที่ไม่ซ้ำกัน
+                count = len(set([o.object_id for o in objects if o.object_id]))
             elif start_time_str and end_time_str:
                 start_time = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%M")
                 end_time = datetime.strptime(end_time_str, "%Y-%m-%dT%H:%M")
@@ -192,7 +202,7 @@ def object_count():
                 if object_type:
                     query["object_type"] = object_type
                 objects = Action.objects(**query)
-                count = objects.count()
+                count = len(set([o.object_id for o in objects if o.object_id]))
         except Exception:
             pass
     return render_template_string("""
@@ -290,6 +300,7 @@ def object_count():
                             <tr>
                                 <th>Person ID</th>
                                 <th>Object Type</th>
+                                <th>Object ID</th>
                                 <th>Start Time</th>
                                 <th>End Time</th>
                             </tr>
@@ -299,6 +310,7 @@ def object_count():
                             <tr>
                                 <td>{{o.person_id}}</td>
                                 <td>{{o.object_type}}</td>
+                                <td>{{o.object_id or '-'}}</td>
                                 <td>{{o.start_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
                                 <td>{{o.end_time.strftime('%d/%m/%Y %H:%M:%S')}}</td>
                             </tr>
