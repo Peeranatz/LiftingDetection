@@ -14,8 +14,8 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
-# video_path = 1
+# video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+video_path = 1
 
 SEQUENCE_LENGTH = 30
 CONF_THRESHOLD = 0.6
@@ -25,6 +25,9 @@ landmark_history = defaultdict(lambda: deque(maxlen=SMOOTH_FRAMES))
 last_action = {}       # track_id -> last action label
 action_start = {}      # track_id -> datetime of start
 buffers = {}           # track_id -> deque
+
+last_object_label = {}
+last_object_id = {}
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
@@ -172,23 +175,25 @@ while cap.isOpened():
                             matched_object_id = str(cls_id)  # ต้องเป็น str เพื่อบันทึกได้
                             break 
                         
-                        now = dt.datetime.now()
-                        
-                        # เก็บผลลัพธ์เฉพาะเมื่อ action เปลี่ยน หรือยังไม่เคยมีมาก่อน
-                        if last_action[htrack_id] != action_label:
-                            if last_action[htrack_id]:
-                                log_action(
-                                    person_id=str(htrack_id),
-                                    action=last_action[htrack_id],
-                                    object_type=object_label,
-                                    object_id=matched_object_id,
-                                    start_time=action_start[htrack_id],
-                                    end_time=now
-                                    # หรือใส่ label ที่ detect ได้ก็ได้
-                                )
-                            last_action[htrack_id] = action_label
-                            action_start[htrack_id] = now
-                            final_results[htrack_id].append((action_label, frame_idx))
+                    now = dt.datetime.now()
+                    # เก็บผลลัพธ์เฉพาะเมื่อ action เปลี่ยน หรือยังไม่เคยมีมาก่อน
+                    if last_action[htrack_id] != action_label:
+                        if last_action[htrack_id]:
+                            log_action(
+                                person_id=str(htrack_id),
+                                action=last_action[htrack_id],
+                                object_type=last_object_label.get(htrack_id),
+                                object_id=last_object_id.get(htrack_id),
+                                start_time=action_start[htrack_id],
+                                end_time=now
+                                # หรือใส่ label ที่ detect ได้ก็ได้
+                            )
+                            
+                        last_action[htrack_id] = action_label
+                        action_start[htrack_id] = now
+                        last_object_label[htrack_id] = matched_object_label
+                        last_object_id[htrack_id]    = matched_object_id    
+                    # final_results[htrack_id].append((action_label, frame_idx))
                             
                 if action_label == 'carrying':
                     cv2.putText(
