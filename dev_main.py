@@ -15,9 +15,10 @@ object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/Human
 
 # Open the video file
 video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+# video_path = 1
 
 SEQUENCE_LENGTH = 30
-CONF_THRESHOLD = 0.5
+CONF_THRESHOLD = 0.6
 SMOOTH_FRAMES = 5
 landmark_history = defaultdict(lambda: deque(maxlen=SMOOTH_FRAMES))
 
@@ -61,17 +62,18 @@ def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
     
     return ("idle" if avg_std < std_threshold else "moving"), avg_std
 
-def log_action(person_id, action, start_time, end_time, object_type=None):
+def log_action(person_id, action, start_time, end_time, object_type=None, object_id=None):
     act = Action(
         person_id=person_id,
         action=action,
         object_type=object_type,
+        object_id=object_id,  # เพิ่ม object_id
         start_time=start_time,
         end_time=end_time,
         created_at=datetime.utcnow(),
     )
     act.save()
-    print("✅ Logged Action:", person_id, action, object_type)
+    print("✅ Logged Action:", person_id, action, object_type, object_id)
 
 cap = cv2.VideoCapture(video_path)
 pTime = 0
@@ -133,7 +135,12 @@ while cap.isOpened():
                     olabel = object_res.boxes.cls.int().cpu().tolist()
                     onames = object_res.names
                     
+                    matched_object_label = None
+                    matched_object_id = None
+                    
                     for obox, otrack_id, oconf, cls_id in zip(object_boxes, track_object_ids, oconfs, olabel):
+                        if oconf < CONF_THRESHOLD:
+                            continue
                         bx, by, bw, bh = obox
                         ox1, oy1, ox2, oy2 = int(bx - bw/2), int(by - bh/2), int(bx + bw/2), int(by + bh/2)
                         object_label = onames[cls_id] if onames else f"class_{cls_id}"
@@ -161,6 +168,9 @@ while cap.isOpened():
                         
                         if matched:
                             action_label = 'carrying'
+                            matched_object_label = object_label
+                            matched_object_id = str(cls_id)  # ต้องเป็น str เพื่อบันทึกได้
+                            break 
                         
                         now = dt.datetime.now()
                         
@@ -170,9 +180,11 @@ while cap.isOpened():
                                 log_action(
                                     person_id=str(htrack_id),
                                     action=last_action[htrack_id],
+                                    object_type=object_label,
+                                    object_id=matched_object_id,
                                     start_time=action_start[htrack_id],
-                                    end_time=now,
-                                    object_type=None,  # หรือใส่ label ที่ detect ได้ก็ได้
+                                    end_time=now
+                                    # หรือใส่ label ที่ detect ได้ก็ได้
                                 )
                             last_action[htrack_id] = action_label
                             action_start[htrack_id] = now
@@ -189,7 +201,6 @@ while cap.isOpened():
                     1,
                 )
                 else:    
-                    # print("ID: {} | Action: {}".format(global_id, action_label))
                     cv2.putText(
                         frame,
                         f"ID:{htrack_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
@@ -223,12 +234,6 @@ while cap.isOpened():
             # for x_n, y_n in smooth_pts:
             #     px, py = int(x_n*w), int(y_n*h)
             #     cv2.circle(roi, (px,py), 3, (255,255,0), -1)
-                        
-            
-            
-    
-    
-
 
         # Plot the tracks
         # for box, track_id in zip(human_boxes, track_human_ids):
@@ -262,7 +267,7 @@ cv2.destroyAllWindows()
 
 
 # พิมพ์สรุปผลลัพธ์ทั้งหมดหลังจบการทำงาน
-for track_id, actions in final_results.items():
-    print(f"\n🧍 Person ID: {track_id}")
-    for act, f_idx in actions:
-        print(f"  🕐 Frame {f_idx}: {act}")
+# for track_id, actions in final_results.items():
+#     print(f"\n🧍 Person ID: {track_id}")
+#     for act, f_idx in actions:
+#         print(f"  🕐 Frame {f_idx}: {act}")
