@@ -6,7 +6,7 @@ import datetime as dt
 
 from datetime import datetime
 from ultralytics import YOLO
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 from Database_system.models.action_model import Action
 
 
@@ -14,10 +14,10 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-# video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
-video_path = 1
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest10.mp4"
+# video_path = 1
 
-SEQUENCE_LENGTH = 30
+SEQUENCE_LENGTH = 15
 CONF_THRESHOLD = 0.6
 SMOOTH_FRAMES = 5
 landmark_history = defaultdict(lambda: deque(maxlen=SMOOTH_FRAMES))
@@ -28,6 +28,7 @@ buffers = {}           # track_id -> deque
 
 last_object_label = {}
 last_object_id = {}
+object_id_to_person_ids = defaultdict(lambda: deque(maxlen=50))
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
@@ -141,6 +142,8 @@ while cap.isOpened():
                     matched_object_label = None
                     matched_object_id = None
                     
+                    print("📦 object_res.boxes.id =", object_res.boxes.id)
+                    
                     for obox, otrack_id, oconf, cls_id in zip(object_boxes, track_object_ids, oconfs, olabel):
                         if oconf < CONF_THRESHOLD:
                             continue
@@ -169,11 +172,21 @@ while cap.isOpened():
                             (ox1, oy1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,0,0), 1)
                         
+                        print(f"🔍 OBJECT DEBUG → otrack_id: {otrack_id}, cls_id: {cls_id}, conf: {oconf:.2f}")
+                        print(f"→ box coords: ({ox1}, {oy1}, {ox2}, {oy2})")
+                        print(f"→ object label: {object_label}")
+                        print(f"→ matched: {matched}")
+                        
+                        
                         if matched:
-                            action_label = 'carrying'
-                            matched_object_label = object_label
-                            matched_object_id = str(cls_id)  # ต้องเป็น str เพื่อบันทึกได้
-                            break 
+                            matched_object_id = str(otrack_id)  # ต้องเป็น str เพื่อบันทึกได้
+                            object_id_to_person_ids[matched_object_id].append(htrack_id)
+                            most_common_id, freq = Counter(object_id_to_person_ids[matched_object_id]).most_common(1)[0]
+                            
+                            if most_common_id == htrack_id and freq >= 15:
+                                action_label = 'carrying'
+                                matched_object_label = object_label
+                                break 
                         
                     now = dt.datetime.now()
                     # เก็บผลลัพธ์เฉพาะเมื่อ action เปลี่ยน หรือยังไม่เคยมีมาก่อน
@@ -192,7 +205,7 @@ while cap.isOpened():
                         last_action[htrack_id] = action_label
                         action_start[htrack_id] = now
                         last_object_label[htrack_id] = matched_object_label
-                        last_object_id[htrack_id]    = matched_object_id    
+                        last_object_id[htrack_id] = matched_object_id    
                     # final_results[htrack_id].append((action_label, frame_idx))
                             
                 if action_label == 'carrying':
@@ -269,6 +282,9 @@ while cap.isOpened():
 
 cap.release()
 cv2.destroyAllWindows()
+
+for obj_id, pid_deque in object_id_to_person_ids.items():
+    print(f"Object ID: {obj_id} → Matched Person IDs (last {pid_deque.maxlen} frames): {max(list(pid_deque))}")
 
 
 # พิมพ์สรุปผลลัพธ์ทั้งหมดหลังจบการทำงาน
