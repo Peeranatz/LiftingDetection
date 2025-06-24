@@ -10,11 +10,11 @@ from collections import defaultdict, deque, Counter
 from Database_system.models.action_model import Action
 
 
-human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt")
-object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
+human_model = YOLO("C:\\Users\\ASUS\\Documents\\GitHub\\LiftingDetection\\HumanBox_Insight_YOLO\\model\\human.pt")
+object_model = YOLO("C:\\Users\\ASUS\\Documents\\GitHub\\LiftingDetection\\HumanBox_Insight_YOLO\\model\\box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest10.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
