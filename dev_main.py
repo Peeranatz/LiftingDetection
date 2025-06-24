@@ -56,6 +56,10 @@ def collect_pose_landmarks(buffer: deque, landmarks):
 def point_in_bbox(x, y, bbox):
     x1, y1, x2, y2 = bbox 
     return x1 <= x <= x2 and y1 <= y <= y2
+
+def get_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) // 2, (y1+ y2) // 2)
     
 def get_action(buffer: deque, std_threshold: float = 0.015) -> str:
     if len(buffer) < 10:
@@ -99,15 +103,16 @@ while cap.isOpened():
         hlabel = human_res.boxes.cls.int().cpu().tolist()
         hnames = human_res.names
         
-
+        human_centers = {}
+        
         # Visualize the result on the frame
         for hbox, htrack_id, hconf, cls_id in zip(human_boxes, track_human_ids, hconfs, hlabel):
             if hconf < CONF_THRESHOLD:
-                continue
-            
+                continue 
             x, y, w, h = hbox
             hx1, hy1, hx2, hy2 = int(x - w/2), int(y - h/2), int(x + w/2), int(y + h/2)
             human_label = hnames[cls_id] if hnames else f"class_{cls_id}"
+            human_centers[htrack_id] = get_center((hx1, hy1, hx2, hy2))
             
             cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 255, 0), 2)
             
@@ -142,14 +147,20 @@ while cap.isOpened():
                     matched_object_label = None
                     matched_object_id = None
                     
-                    print("📦 object_res.boxes.id =", object_res.boxes.id)
-                    
                     for obox, otrack_id, oconf, cls_id in zip(object_boxes, track_object_ids, oconfs, olabel):
                         if oconf < CONF_THRESHOLD:
                             continue
                         bx, by, bw, bh = obox
                         ox1, oy1, ox2, oy2 = int(bx - bw/2), int(by - bh/2), int(bx + bw/2), int(by + bh/2)
+                        
+                        
                         object_label = onames[cls_id] if onames else f"class_{cls_id}"
+                        object_center = get_center((ox1,oy1,ox2,oy2))
+                        
+                        closest_human_id = min(
+                            human_centers,
+                            key=lambda pid: np.linalg.norm(np.array(human_centers[pid]) - np.array(object_center))
+                        )
                         
                         # เตรียมจุดของกล่อง
                         points = [
@@ -163,7 +174,7 @@ while cap.isOpened():
                             (ox1, (oy1 + oy2) // 2),  # middle-left
                             (ox2, (oy1 + oy2) // 2),  # middle-right
                         ]
-                        
+                                    
                         matched = any(point_in_bbox(px, py, (hx1, hy1, hx2, hy2)) for (px, py) in points)
                         
                         cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), (255, 0, 0), 2)
@@ -172,13 +183,7 @@ while cap.isOpened():
                             (ox1, oy1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,0,0), 1)
                         
-                        print(f"🔍 OBJECT DEBUG → otrack_id: {otrack_id}, cls_id: {cls_id}, conf: {oconf:.2f}")
-                        print(f"→ box coords: ({ox1}, {oy1}, {ox2}, {oy2})")
-                        print(f"→ object label: {object_label}")
-                        print(f"→ matched: {matched}")
-                        
-                        
-                        if matched:
+                        if matched and closest_human_id == htrack_id:
                             matched_object_id = str(otrack_id)  # ต้องเป็น str เพื่อบันทึกได้
                             object_id_to_person_ids[matched_object_id].append(htrack_id)
                             most_common_id, freq = Counter(object_id_to_person_ids[matched_object_id]).most_common(1)[0]
