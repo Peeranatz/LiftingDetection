@@ -139,10 +139,10 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
     act.save()
     print("✅ Logged Action:", person_id, action, object_type)
 
-cap = cv.VideoCapture(1)
-# cap = cv.VideoCapture(
-#     "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
-# )
+# cap = cv.VideoCapture(1)
+cap = cv.VideoCapture(
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
+)
 pTime = 0
 frame_idx = 0
 
@@ -156,7 +156,7 @@ while cap.isOpened():
 
     current_time = time.time()
     # Detect humans
-    human_res = yolo_human.track(source=frame, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
+    human_res = yolo_human.track(source=frame, persist=True, stream=False, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml")[0]
     human_bboxes = {}
     for person in human_res.boxes:
         hconf = person.conf[0].item()
@@ -287,7 +287,7 @@ while cap.isOpened():
                 cv.putText(frame,
                         f"{object_label} {bconf:.2f}",
                         (bx1, by1-5),
-                        cv.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
+                        cv.FONT_HERSHEY_SIMPLEX, 0.3, (255,0,0), 1)
                 
                 if matched or iou_val > 0.1:
                     action_label = "carrying"
@@ -302,9 +302,9 @@ while cap.isOpened():
                 f"ID:{global_id} | {hconf:.2f} | Action: {action_label} | Object: {object_label}",
                 (hx1, hy1 - 10),
                 cv.FONT_HERSHEY_SIMPLEX,
-                1,
+                0.3,
                 (255, 0, 0),
-                3,
+                1,
             )
             else:    
                 # print("ID: {} | Action: {}".format(global_id, action_label))
@@ -313,9 +313,9 @@ while cap.isOpened():
                     f"ID:{global_id} | {hconf:.2f} | Action: {action_label} | Avg: {avg:.2f}",
                     (hx1, hy1 - 10),
                     cv.FONT_HERSHEY_SIMPLEX,
-                    1,
+                    0.3,
                     (255, 0, 0),
-                    3,
+                    1,
                 )
         else:
             cv.putText(

@@ -20,19 +20,15 @@ yolo_box = YOLO(
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
-pose =  mpPose.Pose(
-                static_image_mode=False, model_complexity=1,
-                smooth_landmarks=True, min_detection_confidence=0.7,
-                min_tracking_confidence=0.7)
 
 # Constants
-SEQUENCE_LENGTH   = 30  # จำนวน frame ในการตัดสินใจ action 
+SEQUENCE_LENGTH   = 50  # จำนวน frame ในการตัดสินใจ action 
 MIN_VALID_FRAMES  = 15  # ถ้าคนปรากฎน้อยกว่า 15 เฟรมจะไม่เชื่อถือ
 CONF_THRESHOLD    = 0.5 
 SMOOTH_FRAMES     = 5   # smoothing pose
 
 MAX_DIST          = 100    # px สำหรับ matching centroid
-DROPOUT_THRESHOLD = 15     # ถ้าไม่เจอคนนานเกินนี้ -> ลบทิ้ง 
+DROPOUT_THRESHOLD = 50    # ถ้าไม่เจอคนนานเกินนี้ -> ลบทิ้ง 
 
 # State
 id_logs    = {}              # gid -> {"actions":[], "last_seen_frame":…, "total_frames":…}
@@ -143,7 +139,7 @@ def log_action(person_id, action, start_time, end_time, object_type=None):
 
 # cap = cv.VideoCapture(1)
 cap = cv.VideoCapture(
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
 )
 pTime = 0
 frame_idx = 0
@@ -239,7 +235,10 @@ while cap.isOpened():
             
             buffers.setdefault(gid, deque(maxlen=SEQUENCE_LENGTH))
             if gid not in pose_instances:
-                pose_instances[gid] = pose
+                pose_instances[gid] = mpPose.Pose(
+                    static_image_mode=False, model_complexity=1,
+                    smooth_landmarks=True, min_detection_confidence=0.7,
+                    min_tracking_confidence=0.7)
             landmark_history.setdefault(gid, deque(maxlen=SMOOTH_FRAMES))
 
                         
@@ -249,6 +248,10 @@ while cap.isOpened():
             roi = frame[hy1:hy2, hx1:hx2]
             if roi.size == 0: continue
             roi_rgb = cv.cvtColor(roi, cv.COLOR_BGR2RGB)
+            
+            pose = pose_instances.get(gid)
+            if pose is None:
+                continue
             pose_results = pose_instances[gid].process(roi_rgb)
             if not pose_results.pose_landmarks: continue
             lms = pose_results.pose_landmarks.landmark
@@ -266,16 +269,16 @@ while cap.isOpened():
                 smooth_pts = raw_pts
             
             # draw smoothed skeleton on ROI
-            for (start, end) in mpPose.POSE_CONNECTIONS:
-                x1n, y1n = smooth_pts[start]
-                x2n, y2n = smooth_pts[end]
-                p1 = mpDraw._normalized_to_pixel_coordinates(x1n, y1n, hx2-hx1, hy2-hy1)
-                p2 = mpDraw._normalized_to_pixel_coordinates(x2n, y2n, hx2-hx1, hy2-hy1)
-                if p1 and p2:
-                    cv.line(roi, p1, p2, (0, 255, 255), 2)
-            for nx, ny in smooth_pts:
-                px, py = int(nx*(hx2-hx1)), int(ny*(hy2-hy1))
-                cv.circle(roi, (px, py), 3, (255, 255, 0), -1)
+            # for (start, end) in mpPose.POSE_CONNECTIONS:
+            #     x1n, y1n = smooth_pts[start]
+            #     x2n, y2n = smooth_pts[end]
+            #     p1 = mpDraw._normalized_to_pixel_coordinates(x1n, y1n, hx2-hx1, hy2-hy1)
+            #     p2 = mpDraw._normalized_to_pixel_coordinates(x2n, y2n, hx2-hx1, hy2-hy1)
+            #     if p1 and p2:
+            #         cv.line(roi, p1, p2, (0, 255, 255), 2)
+            # for nx, ny in smooth_pts:
+            #     px, py = int(nx*(hx2-hx1)), int(ny*(hy2-hy1))
+            #     cv.circle(roi, (px, py), 3, (255, 255, 0), -1)
                 
             action_label = "unknown"
             avg = 0

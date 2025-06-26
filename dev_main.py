@@ -10,11 +10,11 @@ from collections import defaultdict, deque, Counter
 from Database_system.models.action_model import Action
 
 
-human_model = YOLO("C:\\Users\\ASUS\\Documents\\GitHub\\LiftingDetection\\HumanBox_Insight_YOLO\\model\\human.pt")
-object_model = YOLO("C:\\Users\\ASUS\\Documents\\GitHub\\LiftingDetection\\HumanBox_Insight_YOLO\\model\\box.pt")
+human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt")
+object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
@@ -93,8 +93,8 @@ while cap.isOpened():
         continue
 
     frame_idx += 1
-    human_res = human_model.track(frame, persist=True)[0]
-    object_res = object_model.track(frame, persist=True)[0]
+    human_res = human_model.track(frame, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml",persist=True)[0]
+    object_res = object_model.track(frame, tracker="/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/tracker/bytetrack.yaml", persist=True)[0]
     
     if human_res.boxes and human_res.boxes.id is not None:
         human_boxes = human_res.boxes.xywh.cpu()
@@ -179,7 +179,7 @@ while cap.isOpened():
                         
                         cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), (255, 0, 0), 2)
                         cv2.putText(frame,
-                            f"{object_label} {oconf:.2f}",
+                            f"ID:{otrack_id} | {object_label} | {oconf:.2f}",
                             (ox1, oy1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,0,0), 1)
                         
