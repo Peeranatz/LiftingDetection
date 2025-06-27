@@ -1,0 +1,12 @@
+# bytetrack.yaml
+
+tracker_type: bytetrack
+track_high_thresh: 0.5 # ค่าความมั่นใจที่สูงสุดสำหรับเริ่ม track (ค่าต่ำกว่านี้จะไม่เริ่ม track ใหม่)
+track_low_thresh: 0.2 # ค่าความมั่นใจที่ต่ำสุดสำหรับยัง track ต่อได้
+new_track_thresh: 0.6 # ความมั่นใจขั้นต่ำสำหรับการเริ่ม track ใหม่
+match_thresh: 0.8 # ค่าการแมตช์ IOU ระหว่างเฟรม
+track_buffer: 60 # กี่เฟรมที่ยังคง ID เดิม ถ้าหายไป (เหมาะกับ frame rate ปานกลาง)
+frame_rate: 30 # FPS ของวิดีโอ (ถ้าต่ำกว่า 30 ก็ลดลงได้)
+gmc: False # ปิดการปรับ motion compensation
+use_byte: True # ใช้ ByteTrack
+fuse_score: True # ✅ เปิดไว้เสมอ (รวม confidence + IOU)
