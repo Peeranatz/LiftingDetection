@@ -89,13 +89,16 @@ def extract_features_from_skeleton(landmarks):
     avg_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2
     
     print("[DEBUG]")
-    print("avg_shoulder_y + 0.05: {}".format(avg_shoulder_y + 0.05))
+    print("avg_elbow: {}".format(avg_elbow))
     print("avg_hand_y: {}".format(avg_hand_y))
-    print("avg_hip_y + 0.05: {}".format(avg_hip_y + 0.05))
+    print("avg_hip_y - 0.03: {}".format(avg_hip_y - 0.03))
     print("-----------------------------------------------")
     
-    if avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
+    if 100 < avg_elbow <= 165 and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
         return "carry_normal"
+    
+    if avg_elbow > 165 and avg_hand_y > avg_hip_y - 0.03:
+        return "carry_heavy"  # ถือแนบสะโพก
 
     
 
