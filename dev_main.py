@@ -14,7 +14,7 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_4.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest1.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
@@ -44,6 +44,60 @@ track_history = defaultdict(lambda: [])
 final_results = defaultdict(list)
 
 SELECTED_JOINTS = [11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+CARRYING_LABELS = {
+    0: "carry_normal",
+    1: "carry_heavy",
+    2: "push_forward",
+    3: "pull_backward",
+    4: "carry_together",
+    5: "carry_on_shoulder"
+}
+
+def calculate_angle(a, b, c):
+    a = np.array([a.x, a.y])
+    b = np.array([b.x, b.y])
+    c = np.array([c.x, c.y])
+
+    ba = a - b
+    bc = c - b
+
+    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+    return np.degrees(angle)
+
+def extract_features_from_skeleton(landmarks):
+    # joints
+    l_shoulder, r_shoulder = landmarks[11], landmarks[12]
+    l_elbow, r_elbow = landmarks[13], landmarks[14]
+    l_wrist, r_wrist = landmarks[15], landmarks[16]
+    l_hip, r_hip = landmarks[23], landmarks[24]
+    nose = landmarks[0]
+
+    # 1. elbow angles
+    left_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
+    right_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
+    avg_elbow = (left_elbow_angle + right_elbow_angle) / 2
+
+    # 2. hand height (Y)
+    avg_hand_y = (l_wrist.y + r_wrist.y) / 2
+    avg_shoulder_y = (l_shoulder.y + r_shoulder.y) / 2
+    avg_hip_y = (l_hip.y + r_hip.y) / 2
+    nose_y = nose.y
+
+    # 3. hand forward/backward (X)
+    avg_hand_x = (l_wrist.x + r_wrist.x) / 2
+    avg_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2
+    
+    print("[DEBUG]")
+    print("avg_shoulder_y + 0.05: {}".format(avg_shoulder_y + 0.05))
+    print("avg_hand_y: {}".format(avg_hand_y))
+    print("avg_hip_y + 0.05: {}".format(avg_hip_y + 0.05))
+    print("-----------------------------------------------")
+    
+    if avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
+        return "carry_normal"
+
+    
 
 def collect_pose_landmarks(buffer: deque, landmarks):
     pose_array = []
@@ -105,6 +159,14 @@ while cap.isOpened():
         
         human_centers = {}
         
+        # ลบ buffer ของ ID ที่หายไป
+        for tid in list(buffers.keys()):
+            if tid not in track_human_ids:
+                buffers.pop(tid, None)
+                last_action.pop(tid, None)
+                action_start.pop(tid, None)
+                landmark_history.pop(tid, None)
+                
         # Visualize the result on the frame
         for hbox, htrack_id, hconf, cls_id in zip(human_boxes, track_human_ids, hconfs, hlabel):
             if hconf < CONF_THRESHOLD:
@@ -131,6 +193,26 @@ while cap.isOpened():
             
             lms = pose_results.pose_landmarks.landmark
             collect_pose_landmarks(buffers[htrack_id], lms)
+            
+            # SKELETON
+            pts = np.array([[p.x, p.y] for p in lms])           # shape (33,2)
+            landmark_history[htrack_id].append(pts)
+            
+            # Compute smoothed landmarks
+            hist = np.stack(landmark_history[htrack_id], axis=0) # (F,33,2)
+            smooth_pts = hist.mean(axis=0)              
+            
+            # วาดด้วย smooth_pts แทน raw lm
+            for (s, e) in mpPose.POSE_CONNECTIONS:
+                p1 = mpDraw._normalized_to_pixel_coordinates(smooth_pts[s][0], smooth_pts[s][1], w, h)
+                p2 = mpDraw._normalized_to_pixel_coordinates(smooth_pts[e][0], smooth_pts[e][1], w, h)
+                if p1 and p2:
+                    pt1 = tuple(map(int, p1))
+                    pt2 = tuple(map(int, p2))
+                    cv2.line(roi, pt1, pt2, (0,255,255), 2)
+            for x_n, y_n in smooth_pts:
+                px, py = int(x_n*w), int(y_n*h)
+                cv2.circle(roi, (px,py), 3, (255,255,0), -1)
                 
             action_label = "unknown"
             avg = 0
@@ -189,23 +271,25 @@ while cap.isOpened():
                             most_common_id, freq = Counter(object_id_to_person_ids[matched_object_id]).most_common(1)[0]
                             
                             if most_common_id == htrack_id and freq >= 15:
-                                action_label = 'carrying'
+                                detailed_label = extract_features_from_skeleton(lms)
+                                print(f"[DEBUG] Skeleton-Based Action: {detailed_label}")
+                                action_label = detailed_label if detailed_label else "carrying"
                                 matched_object_label = object_label
                                 break 
                         
                     now = dt.datetime.now()
                     # เก็บผลลัพธ์เฉพาะเมื่อ action เปลี่ยน หรือยังไม่เคยมีมาก่อน
                     if last_action[htrack_id] != action_label:
-                        if last_action[htrack_id]:
-                            log_action(
-                                person_id=str(htrack_id),
-                                action=last_action[htrack_id],
-                                object_type=last_object_label.get(htrack_id),
-                                object_id=last_object_id.get(htrack_id),
-                                start_time=action_start[htrack_id],
-                                end_time=now
-                                # หรือใส่ label ที่ detect ได้ก็ได้
-                            )
+                        # if last_action[htrack_id]:
+                        #     log_action(
+                        #         person_id=str(htrack_id),
+                        #         action=last_action[htrack_id],
+                        #         object_type=last_object_label.get(htrack_id),
+                        #         object_id=last_object_id.get(htrack_id),
+                        #         start_time=action_start[htrack_id],
+                        #         end_time=now
+                        #         # หรือใส่ label ที่ detect ได้ก็ได้
+                        #     )
                             
                         last_action[htrack_id] = action_label
                         action_start[htrack_id] = now
@@ -237,27 +321,6 @@ while cap.isOpened():
             else:
                 cv2.putText(frame, f"ID:{htrack_id} | {hconf:.2f}", (hx1, hy1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1)
                 
-            # SKELETON
-            # lm = pose_results.pose_landmarks.landmark
-            # pts = np.array([[p.x, p.y] for p in lm])           # shape (33,2)
-            # landmark_history[track_id].append(pts)
-            
-            # # Compute smoothed landmarks
-            # hist = np.stack(landmark_history[track_id], axis=0) # (F,33,2)
-            # smooth_pts = hist.mean(axis=0)              
-            
-            # # วาดด้วย smooth_pts แทน raw lm
-            # for (s, e) in mpPose.POSE_CONNECTIONS:
-            #     p1 = mpDraw._normalized_to_pixel_coordinates(smooth_pts[s][0], smooth_pts[s][1], w, h)
-            #     p2 = mpDraw._normalized_to_pixel_coordinates(smooth_pts[e][0], smooth_pts[e][1], w, h)
-            #     if p1 and p2:
-            #         pt1 = tuple(map(int, p1))
-            #         pt2 = tuple(map(int, p2))
-            #         cv2.line(roi, pt1, pt2, (0,255,255), 2)
-            # for x_n, y_n in smooth_pts:
-            #     px, py = int(x_n*w), int(y_n*h)
-            #     cv2.circle(roi, (px,py), 3, (255,255,0), -1)
-
         # Plot the tracks
         # for box, track_id in zip(human_boxes, track_human_ids):
         #     x, y, w, h = box
