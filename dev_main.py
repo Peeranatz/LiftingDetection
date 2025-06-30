@@ -14,7 +14,7 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest1.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest6.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
@@ -88,11 +88,11 @@ def extract_features_from_skeleton(landmarks):
     avg_hand_x = (l_wrist.x + r_wrist.x) / 2
     avg_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2
     
-    print("[DEBUG]")
-    print("avg_elbow: {}".format(avg_elbow))
-    print("avg_hand_y: {}".format(avg_hand_y))
-    print("avg_hip_y - 0.03: {}".format(avg_hip_y - 0.03))
-    print("-----------------------------------------------")
+    # print("[DEBUG]")
+    # print("avg_elbow: {}".format(avg_elbow))
+    # print("avg_hand_y: {}".format(avg_hand_y))
+    # print("avg_hip_y - 0.03: {}".format(avg_hip_y - 0.03))
+    # print("-----------------------------------------------")
     
     if 100 < avg_elbow <= 165 and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
         return "carry_normal"
@@ -112,7 +112,9 @@ def collect_pose_landmarks(buffer: deque, landmarks):
     
 def point_in_bbox(x, y, bbox):
     x1, y1, x2, y2 = bbox 
-    return x1 <= x <= x2 and y1 <= y <= y2
+    result = x1 <= x <= x2 and y1 <= y <= y2
+    # print(f"[DEBUG] Point ({x},{y}) in BBox ({x1},{y1})-({x2},{y2})? {result}")
+    return result
 
 def get_center(bbox):
     x1, y1, x2, y2 = bbox
@@ -242,10 +244,13 @@ while cap.isOpened():
                         object_label = onames[cls_id] if onames else f"class_{cls_id}"
                         object_center = get_center((ox1,oy1,ox2,oy2))
                         
-                        closest_human_id = min(
-                            human_centers,
-                            key=lambda pid: np.linalg.norm(np.array(human_centers[pid]) - np.array(object_center))
-                        )
+                        # closest_human_id = min(
+                        #     human_centers,
+                        #     key=lambda pid: np.linalg.norm(np.array(human_centers[pid]) - np.array(object_center))
+                        # )
+                        
+                        matched_human_centers = []
+                        matched_human_ids = []
                         
                         # เตรียมจุดของกล่อง
                         points = [
@@ -259,7 +264,7 @@ while cap.isOpened():
                             (ox1, (oy1 + oy2) // 2),  # middle-left
                             (ox2, (oy1 + oy2) // 2),  # middle-right
                         ]
-                                    
+                                           
                         matched = any(point_in_bbox(px, py, (hx1, hy1, hx2, hy2)) for (px, py) in points)
                         
                         cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), (255, 0, 0), 2)
@@ -268,17 +273,31 @@ while cap.isOpened():
                             (ox1, oy1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,0,0), 1)
                         
-                        if matched and closest_human_id == htrack_id:
+                        # if matched and closest_human_id == htrack_id:
+                        if matched:
+                            matched_human_centers.append(human_centers[htrack_id])
+                            matched_human_ids.append(htrack_id)
                             matched_object_id = str(otrack_id)  # ต้องเป็น str เพื่อบันทึกได้
                             object_id_to_person_ids[matched_object_id].append(htrack_id)
                             most_common_id, freq = Counter(object_id_to_person_ids[matched_object_id]).most_common(1)[0]
                             
-                            if most_common_id == htrack_id and freq >= 15:
-                                detailed_label = extract_features_from_skeleton(lms)
-                                print(f"[DEBUG] Skeleton-Based Action: {detailed_label}")
+                            deque_vals = list(object_id_to_person_ids[matched_object_id])
+                            counts = Counter(deque_vals)
+
+                            # หาคนที่ผ่าน threshold ทุกคน
+                            carriers = [pid for pid, cnt in counts.items() if cnt >= 15]
+
+                            if carriers:
+                                # ถ้ามี 2 คนขึ้นไป ให้เป็น carry_together
+                                if len(carriers) > 1:
+                                    detailed_label = "carry_together"
+                                else:
+                                    # คนเดียว ก็ไปเช็ค skeleton ตามเดิม
+                                    detailed_label = extract_features_from_skeleton(lms)
+
                                 action_label = detailed_label if detailed_label else "carrying"
                                 matched_object_label = object_label
-                                break 
+                                break
                         
                     now = dt.datetime.now()
                     # เก็บผลลัพธ์เฉพาะเมื่อ action เปลี่ยน หรือยังไม่เคยมีมาก่อน
@@ -354,8 +373,29 @@ while cap.isOpened():
 cap.release()
 cv2.destroyAllWindows()
 
+print("\n=== Action Summary per Person ===")
+for pid in sorted(last_action.keys()):
+    action = last_action.get(pid, "unknown")
+    obj_label = last_object_label.get(pid, None)
+    obj_id    = last_object_id.get(pid, None)
+    start     = action_start.get(pid, None)
+    print(f"Person ID {pid}:")
+    print(f"  • Last action     : {action}")
+    print(f"  • Matched object  : {obj_label} (ID={obj_id})")
+    print(f"  • Action started  : {start}")
+    print()
+
+print("=== Object ↔ Person Matches (last frames) ===")
 for obj_id, pid_deque in object_id_to_person_ids.items():
-    print(f"Object ID: {obj_id} → Matched Person IDs (last {pid_deque.maxlen} frames): {max(list(pid_deque))}")
+    persons = list(pid_deque)
+    counts  = Counter(persons)
+    print(f"Object ID {obj_id}:")
+    print(f"  • Matched person IDs (history): {persons}")
+    print(f"  • Frequency count            : {counts}")
+    print()
+
+# for obj_id, pid_deque in object_id_to_person_ids.items():
+#     print(f"Object ID: {obj_id} → Matched Person IDs (last {pid_deque.maxlen} frames): {max(list(pid_deque))}")
 
 
 # พิมพ์สรุปผลลัพธ์ทั้งหมดหลังจบการทำงาน
