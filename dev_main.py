@@ -14,7 +14,7 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest6.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest7.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
@@ -43,6 +43,9 @@ pose = mpPose.Pose(
 track_history = defaultdict(lambda: [])
 final_results = defaultdict(list)
 
+# สร้าง buffer เก็บ push flag per track
+push_history = defaultdict(lambda: deque(maxlen=5))
+
 SELECTED_JOINTS = [11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
 CARRYING_LABELS = {
     0: "carry_normal",
@@ -65,7 +68,7 @@ def calculate_angle(a, b, c):
     angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
     return np.degrees(angle)
 
-def extract_features_from_skeleton(landmarks):
+def extract_features_from_skeleton(landmarks, track_id):
     # joints
     l_shoulder, r_shoulder = landmarks[11], landmarks[12]
     l_elbow, r_elbow = landmarks[13], landmarks[14]
@@ -88,19 +91,34 @@ def extract_features_from_skeleton(landmarks):
     avg_hand_x = (l_wrist.x + r_wrist.x) / 2
     avg_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2
     
-    # print("[DEBUG]")
-    # print("avg_elbow: {}".format(avg_elbow))
-    # print("avg_hand_y: {}".format(avg_hand_y))
-    # print("avg_hip_y - 0.03: {}".format(avg_hip_y - 0.03))
-    # print("-----------------------------------------------")
+    print("[DEBUG]")
+    print("avg_elbow:", avg_elbow)
+    print("hand_y:", avg_hand_y, "shoulder_y:", avg_shoulder_y, "hip_y:", avg_hip_y)
+    print("hand_x:", avg_hand_x, "shoulder_x:", avg_shoulder_x)
+    print("-----------------------------------------------")
     
-    if 100 < avg_elbow <= 165 and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
+    is_push = False 
+    if abs(avg_hand_x - avg_shoulder_x) > 0.05 \
+    and (avg_shoulder_y + 0.02) < avg_hand_y < (avg_hip_y - 0.02) \
+    and avg_elbow > 100:
+        is_push = True
+    
+    push_history[track_id].append(is_push)
+    
+    if sum(push_history[track_id]) >= 2:
+        return "push_forward"
+    
+    elif 100 < avg_elbow <= 165 \
+        and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05:
         return "carry_normal"
-    
-    if avg_elbow > 165 and avg_hand_y > avg_hip_y - 0.03:
-        return "carry_heavy"  # ถือแนบสะโพก
 
+    elif avg_elbow > 165 \
+        and avg_hand_y > avg_hip_y - 0.03:
+        return "carry_heavy"
     
+    elif avg_hand_y > avg_shoulder_y - 0.05 and avg_elbow < 70:
+        return "carry_on_shoulder"
+
 
 def collect_pose_landmarks(buffer: deque, landmarks):
     pose_array = []
@@ -293,7 +311,7 @@ while cap.isOpened():
                                     detailed_label = "carry_together"
                                 else:
                                     # คนเดียว ก็ไปเช็ค skeleton ตามเดิม
-                                    detailed_label = extract_features_from_skeleton(lms)
+                                    detailed_label = extract_features_from_skeleton(lms, htrack_id)
 
                                 action_label = detailed_label if detailed_label else "carrying"
                                 matched_object_label = object_label
@@ -318,7 +336,9 @@ while cap.isOpened():
                         last_object_label[htrack_id] = matched_object_label
                         last_object_id[htrack_id] = matched_object_id    
                     # final_results[htrack_id].append((action_label, frame_idx))
-                            
+                
+                print("Action: {}".format(action_label))
+                        
                 if action_label == 'carrying':
                     cv2.putText(
                     frame,
