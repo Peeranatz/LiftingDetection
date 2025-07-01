@@ -14,7 +14,7 @@ human_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanB
 object_model = YOLO("/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/box.pt")
 
 # Open the video file
-video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest7.mp4"
+video_path = "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/drags_new!!.mp4"
 # video_path = 1
 
 SEQUENCE_LENGTH = 15
@@ -118,6 +118,11 @@ def extract_features_from_skeleton(landmarks, track_id):
     
     elif avg_hand_y > avg_shoulder_y - 0.05 and avg_elbow < 70:
         return "carry_on_shoulder"
+    
+    elif (100 <= avg_elbow <= 160
+        and avg_shoulder_y + 0.02 < avg_hand_y < avg_hip_y - 0.02
+        and avg_hand_x < avg_shoulder_x - 0.03):
+        return "pull_backward"
 
 
 def collect_pose_landmarks(buffer: deque, landmarks):
