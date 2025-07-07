@@ -19,7 +19,7 @@ object_model = YOLO(
 
 # Open the video file
 video_path = (
-    "/Users/balast/Desktop/LiftingProject/LiftingDetection/videos/action_lifamend5.mp4"
+    "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets/Carrying/Datatest1.mp4"
 )
 # video_path = 1
 
@@ -49,8 +49,12 @@ pose = mpPose.Pose(
 track_history = defaultdict(lambda: [])
 final_results = defaultdict(list)
 
-# สร้าง buffer เก็บ push flag per track
+# สร้าง buffer เก็บ carrying flag per track
 push_history = defaultdict(lambda: deque(maxlen=5))
+carry_normal_history = defaultdict(lambda: deque(maxlen=5))
+carry_heavy_history = defaultdict(lambda: deque(maxlen=5))
+pull_history = defaultdict(lambda: deque(maxlen=5))
+shoulder_history = defaultdict(lambda: deque(maxlen=5))
 
 SELECTED_JOINTS = [
     11,
@@ -122,63 +126,69 @@ def extract_features_from_skeleton(landmarks, track_id):
     avg_hand_x = (l_wrist.x + r_wrist.x) / 2
     avg_shoulder_x = (l_shoulder.x + r_shoulder.x) / 2
 
-    print("[DEBUG - PULL CHECK]")
-    print(f"  Left angle: {calculate_angle(l_shoulder, l_elbow, l_wrist):.2f}")
-    print(f"  Right angle: {calculate_angle(r_shoulder, r_elbow, r_wrist):.2f}")
-    print(
-        f"  L wrist (x={l_wrist.x:.2f}, y={l_wrist.y:.2f}) vs Shoulder (x={l_shoulder.x:.2f}, y={l_shoulder.y:.2f})"
-    )
-    print(
-        f"  R wrist (x={r_wrist.x:.2f}, y={r_wrist.y:.2f}) vs Shoulder (x={r_shoulder.x:.2f}, y={r_shoulder.y:.2f})"
-    )
-    print(f"    AVG Hand (x={avg_hand_x:.2f}, y={avg_hand_y:.2f})")
-    print(f"    AVG Shoulder (x={avg_shoulder_x:.2f}, y={avg_shoulder_y:.2f})")
-    print(f"    AVG Hip ({avg_hip_y:.2f})")
-    print(f"    AVG Elbow ({avg_elbow:.2f})")
+    # print("[DEBUG]")
+    # print(f"  Left angle: {calculate_angle(l_shoulder, l_elbow, l_wrist):.2f}")
+    # print(f"  Right angle: {calculate_angle(r_shoulder, r_elbow, r_wrist):.2f}")
+    # print(
+    #     f"  L wrist (x={l_wrist.x:.2f}, y={l_wrist.y:.2f}) vs Shoulder (x={l_shoulder.x:.2f}, y={l_shoulder.y:.2f})"
+    # )
+    # print(
+    #     f"  R wrist (x={r_wrist.x:.2f}, y={r_wrist.y:.2f}) vs Shoulder (x={r_shoulder.x:.2f}, y={r_shoulder.y:.2f})"
+    # )
+    # print(f"  AVG Hand (x={avg_hand_x:.2f}, y={avg_hand_y:.2f})")
+    # print(f"  AVG Shoulder (x={avg_shoulder_x:.2f}, y={avg_shoulder_y:.2f})")
+    # print(f"  AVG Hip ({avg_hip_y:.2f})")
+    # print(f"  AVG Elbow ({avg_elbow:.2f})")
 
     print("-----------------------------------")
 
+    is_pull = False
     is_push = False
-    if (
-        abs(avg_hand_x - avg_shoulder_x) > 0.05
-        and (avg_shoulder_y + 0.02) < avg_hand_y < (avg_hip_y - 0.02)
-        and avg_elbow > 100
-    ):
-        is_push = True
-
-    push_history[track_id].append(is_push)
-
-    left_pull = (
-        100 <= calculate_angle(l_shoulder, l_elbow, l_wrist) <= 160
-        and l_shoulder.y + 0.02 < l_wrist.y < l_hip.y - 0.02
-        and l_wrist.x < l_shoulder.x - 0.03
-    )
-
-    right_pull = (
-        100 <= calculate_angle(r_shoulder, r_elbow, r_wrist) <= 160
-        and r_shoulder.y + 0.02 < r_wrist.y < r_hip.y - 0.02
-        and r_wrist.x < r_shoulder.x - 0.03
-    )
-
+    is_carry_normal = False 
+    is_carry_heavy = False 
+    is_carry_on_shoulder = False
+    
     if (
         95 <= avg_elbow <= 160
         and avg_shoulder_y + 0.02 < avg_hand_y < avg_hip_y - 0.02
         and ((l_wrist.x > l_shoulder.x + 0.03) or (r_wrist.x > r_shoulder.x + 0.03))
     ):
+        is_pull = True
+    elif (
+        abs(avg_hand_x - avg_shoulder_x) > 0.05
+        and (avg_shoulder_y + 0.02) < avg_hand_y < (avg_hip_y - 0.02)
+        and avg_elbow > 100
+    ):
+        is_push = True
+    elif (
+        100 < avg_elbow <= 165 and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05
+    ):
+        is_carry_normal = True
+    elif avg_elbow > 165 and avg_hand_y > avg_hip_y - 0.03:
+        is_carry_heavy = True
+    elif avg_hand_y > avg_shoulder_y - 0.05 and avg_elbow < 70:
+        is_carry_on_shoulder = True
+    
+
+    pull_history[track_id].append(is_pull)
+    push_history[track_id].append(is_push)
+    carry_normal_history[track_id].append(is_carry_normal)
+    carry_heavy_history[track_id].append(is_carry_heavy)
+    shoulder_history[track_id].append(is_carry_on_shoulder)
+    
+    if sum(pull_history[track_id]) >= 2:
         return "pull_backward"
 
     elif sum(push_history[track_id]) >= 2:
         return "push_forward"
 
-    elif (
-        100 < avg_elbow <= 165 and avg_shoulder_y + 0.05 < avg_hand_y < avg_hip_y + 0.05
-    ):
+    elif sum(carry_normal_history[track_id]) >= 2:
         return "carry_normal"
 
-    elif avg_elbow > 165 and avg_hand_y > avg_hip_y - 0.03:
+    elif sum(carry_heavy_history[track_id]) >= 2:
         return "carry_heavy"
 
-    elif avg_hand_y > avg_shoulder_y - 0.05 and avg_elbow < 70:
+    elif sum(shoulder_history[track_id]) >= 2:
         return "carry_on_shoulder"
 
 
@@ -237,6 +247,8 @@ while cap.isOpened():
     success, frame = cap.read()
     if not success:
         continue
+    
+    frame = cv2.resize(frame, (640, 480))
 
     frame_idx += 1
     human_res = human_model.track(
