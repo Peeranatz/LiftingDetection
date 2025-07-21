@@ -1,0 +1,7 @@
+VIDEO_SOURCE: "/Users/balast/Desktop/LiftingProject/LiftingDetection/video_datasets_2/Carrying/carry_together_01.mp4" # หรือ 0 สำหรับ webcam
+HUMAN_MODEL_PT: "/Users/balast/Desktop/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt"
+SEQ_LEN: 15
+CONF_THRESH: 0.6
+BATCH_SIZE: 1
+IMG_SIZE: [224, 224]
+DEVICE: "cuda" # หรือ "cpu"
