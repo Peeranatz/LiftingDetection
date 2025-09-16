@@ -54,7 +54,9 @@ while True:
     results = model.track(source=frame, task="pose", persist=True, verbose=False)
     result = results[0]
     
-    annotated_frame = result.orig_img.copy()
+    frame_clean = result.orig_img.copy()     # เฟรมดิบ
+    frame_auto_annotated = result.plot()     # YOLO วาดให้เรียบร้อย
+    
 
     print(f"Frame: {frame_count}", end='\r')
     for i, box in enumerate(result.boxes):
@@ -66,7 +68,7 @@ while True:
             conf = box.conf[0].item()
             
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.rectangle(frame_clean, (x1, y1), (x2, y2), (255, 0, 0), 2)
             
             # extract track ID
             if hasattr(box, "id") and box.id is not None:
@@ -82,19 +84,19 @@ while True:
             label = f"ID {local_id}"
             print(f"[{local_id}] PERSON -> BBox: {bbox}, Conf: {conf}")
 
-            cv2.putText(annotated_frame, f"ID: {local_id} - Class: {class_name}", (x1, y1 - 10),
+            cv2.putText(frame_clean, f"ID: {local_id} - Class: {class_name}", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             
             if result.keypoints is not None:
                 keypoints = result.keypoints.xy[i]
                 print("Keypoints (x,y):")
                 for idx, (x, y) in enumerate(keypoints):
-                    cv2.circle(annotated_frame, (int(x), int(y)), 3, (0, 0, 255), -1)
+                    cv2.circle(frame_clean, (int(x), int(y)), 3, (0, 0, 255), -1)
                     name = KEYPOINT_NAMES[idx] if idx < len(KEYPOINT_NAMES) else f"Point{idx}"
                     print(f"{name}: ({x:.1f}, {y:.1f})")
 
     
-    cv2.imshow("YOLOv11 Pose Detection", annotated_frame)
+    cv2.imshow("YOLOv11 Pose Detection", frame_clean)
     
     if cv2.waitKey(1) & 0xFF == ord('q'):
         print("Exit by user.")
