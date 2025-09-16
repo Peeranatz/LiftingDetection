@@ -68,6 +68,10 @@ while True:
             conf = box.conf[0].item()
             
             x1, y1, x2, y2 = map(int, box.xyxy[0])
+            width  = x2 - x1
+            height = y2 - y1
+            area   = width * height
+            
             cv2.rectangle(frame_clean, (x1, y1), (x2, y2), (255, 0, 0), 2)
             
             # extract track ID
@@ -81,6 +85,9 @@ while True:
                 next_local_id += 1 
             local_id = local_id_map[track_id]
             
+            print(f"[{local_id}] BBox: ({x1},{y1},{x2},{y2}) "
+            f"→ W={width}px, H={height}px, Area={area}px²")
+            
             label = f"ID {local_id}"
             print(f"[{local_id}] PERSON -> BBox: {bbox}, Conf: {conf}")
 
@@ -91,16 +98,4 @@ while True:
                 keypoints = result.keypoints.xy[i]
                 print("Keypoints (x,y):")
                 for idx, (x, y) in enumerate(keypoints):
-                    cv2.circle(frame_clean, (int(x), int(y)), 3, (0, 0, 255), -1)
-                    name = KEYPOINT_NAMES[idx] if idx < len(KEYPOINT_NAMES) else f"Point{idx}"
-                    print(f"{name}: ({x:.1f}, {y:.1f})")
-
-    
-    cv2.imshow("YOLOv11 Pose Detection", frame_clean)
-    
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        print("Exit by user.")
-        break 
-
-cap.release()
-cv2.destroyAllWindows()
+                    cv2.circle(frame_clean, (int(x), int(y)), 3, (0,
