@@ -98,4 +98,16 @@ while True:
                 keypoints = result.keypoints.xy[i]
                 print("Keypoints (x,y):")
                 for idx, (x, y) in enumerate(keypoints):
-                    cv2.circle(frame_clean, (int(x), int(y)), 3, (0,
+                    cv2.circle(frame_clean, (int(x), int(y)), 3, (0, 0, 255), -1)
+                    name = KEYPOINT_NAMES[idx] if idx < len(KEYPOINT_NAMES) else f"Point{idx}"
+                    print(f"{name}: ({x:.1f}, {y:.1f})")
+
+    
+    cv2.imshow("YOLOv11 Pose Detection", frame_auto_annotated)
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("Exit by user.")
+        break 
+
+cap.release()
+cv2.destroyAllWindows()
