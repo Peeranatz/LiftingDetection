@@ -31,7 +31,11 @@ def collect_raw_keypoints(config_path: str, output_json: str = "raw_keypoints.js
         if not success:
             break
 
-        results = model.track(frame, persist=True)
+        results = model.track(frame, persist=True, tracker="bytetrack.yaml", verbose=False)
+        
+        if results[0].boxes.id is not None:
+            print("Frame", frame_id, "→ track_ids:", results[0].boxes.id.tolist())
+
 
         if len(results) == 0 or results[0].boxes.id is None:
             frame_id += 1
@@ -108,13 +112,13 @@ def normalize_sequence_length(input_json: str, output_dir: str = "aligned_npy",t
         }
 
         print(f"Track {pid}: {T_original} → {target_length} frames")
-        
-        summary_path = os.path.join(output_dir, "alignment_summary.json")
-        with open(summary_path, "w") as f:
-            json.dump(summary, f, indent=4)
+    
+    summary_path = os.path.join(output_dir, "alignment_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=4)
 
-        print(f"Alignment complete! Saved {len(summary)} sequences in '{output_dir}/'")
-        return summary
+    print(f"Alignment complete! Saved {len(summary)} sequences in '{output_dir}/'")
+    return summary
 
 if __name__ == "__main__":
     data = collect_raw_keypoints(
