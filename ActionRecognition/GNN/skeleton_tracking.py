@@ -58,7 +58,7 @@ while True:
     fps = 1.0 / (curr_time - prev_time)
     prev_time = curr_time
     
-    results = model.track(source=frame, task="pose", persist=True, verbose=False)
+    results = model.track(source=frame, task="pose", persist=True, tracker="bytetrack.yaml", verbose=False)
     result = results[0]
     
     frame_clean = result.orig_img.copy()     # เฟรมดิบ
