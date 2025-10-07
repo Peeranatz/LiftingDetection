@@ -2,6 +2,8 @@ import cv2
 import json
 import yaml
 import numpy as np
+import os
+
 from ultralytics import YOLO
 from collections import defaultdict
 from typing import Dict, Any
@@ -67,12 +69,61 @@ def collect_raw_keypoints(config_path: str, output_json: str = "raw_keypoints.js
     with open(output_json, "w") as f:
         json.dump(output_data, f, indent=4)
 
-    print(f"✅ Saved {len(output_data)} person sequences → {output_json}")
+    print(f"Saved {len(output_data)} person sequences → {output_json}")
     return output_data
 
+
+# step 2
+def normalize_sequence_length(input_json: str, output_dir: str = "aligned_npy",target_length: int = 60) -> Dict[int, Any]:
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(input_json, "r") as f:
+        data = json.load(f)
+        
+    summary = {}
+    
+    def sample_or_pad(seq: np.ndarray, target_len: int) -> np.ndarray:
+        n = len(seq)
+        if n == target_len:
+            return seq
+        elif n > target_len:
+            # Uniform sampling
+            idx = np.linspace(0, n - 1, target_len).astype(int)
+            return seq[idx]
+        else:
+            # Pad with zeros (T,17,3)
+            pad = np.zeros((target_len - n, seq.shape[1], seq.shape[2]))
+            return np.concatenate([seq, pad], axis=0)
+    
+    for pid, info in data.items():
+        seq = np.array(info["keypoints"])  # (T,17,3)
+        T_original = seq.shape[0]
+        seq_aligned = sample_or_pad(seq, target_length)
+
+        np.save(f"{output_dir}/track_{pid}.npy", seq_aligned)
+        summary[pid] = {
+            "original_frames": T_original,
+            "aligned_frames": target_length,
+            "file": f"track_{pid}.npy"
+        }
+
+        print(f"Track {pid}: {T_original} → {target_length} frames")
+        
+        summary_path = os.path.join(output_dir, "alignment_summary.json")
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=4)
+
+        print(f"Alignment complete! Saved {len(summary)} sequences in '{output_dir}/'")
+        return summary
 
 if __name__ == "__main__":
     data = collect_raw_keypoints(
         config_path="/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/GNN/config.yaml",
         output_json="raw_keypoints.json"
+    )
+    
+    normalize_sequence_length(
+        input_json="raw_keypoints.json",
+        output_dir="aligned_npy",
+        target_length=60
     )
