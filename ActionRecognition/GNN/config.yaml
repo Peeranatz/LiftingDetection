@@ -1,2 +1,2 @@
-VIDEO_SOURCE: "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video.mp4" # หรือ 0 สำหรับ webcam
-HUMAN_MODEL_PT: "/Users/balast/Desktop/LiftingProject/LiftingDetection/ActionRecognition/GNN/models/yolo11n-pose.pt"
+VIDEO_SOURCE: "C:\\Users\\student\\Desktop\\6610110408\\LiftingProject\\LiftingDetection\\ActionRecognition\\data\\test_video\\test_video.mp4" # หรือ 0 สำหรับ webcam
+HUMAN_MODEL_PT: "C:\\Users\\student\\Desktop\\6610110408\\LiftingProject\\LiftingDetection\\HumanBox_Insight_YOLO\\model\\yolov8s_keypoint_best.pt"
