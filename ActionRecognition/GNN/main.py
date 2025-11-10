@@ -199,7 +199,7 @@ options = vision.PoseLandmarkerOptions(
 detector = vision.PoseLandmarker.create_from_options(options)
 
 cam = cv2.VideoCapture(
-    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_3.mp4"
+    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_2.mp4"
 )
 
 # ===================== [ADDED] buffer สำหรับลำดับ NTU25 =====================
@@ -281,6 +281,26 @@ while True:
 
         # วาด skeleton ของคนนี้ (UNCHANGED)
         _draw_ntu25_on_image(BGR_time, ntu25, use_pixel=True)
+        
+        # ==== Draw YOLO bounding box and class label (ADD) ====
+        # วาดกรอบสี่เหลี่ยม
+        cv2.rectangle(BGR_time, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # สร้างข้อความ: class + confidence
+        label = f"person {score:.2f}"
+
+        # หาความกว้างของข้อความ เพื่อขยายพื้นหลัง
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+
+        # วาดพื้นหลังสีดำข้างบน bbox (กันอ่านยาก)
+        cv2.rectangle(BGR_time, (x1, y1 - th - 4), (x1 + tw + 4, y1), (0, 255, 0), -1)
+
+        # วาดข้อความ class
+        cv2.putText(BGR_time, label, (x1 + 2, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+        
+        
     
     # ==== push per-frame list (ADD) ====
     # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
