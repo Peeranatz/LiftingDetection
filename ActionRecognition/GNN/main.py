@@ -11,6 +11,9 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from ultralytics import YOLO
+
+yolo_model = YOLO("/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt")
 
 # ===================== [ADDED] NTU-25 drawing config =====================
 SHOW_NTU = True          # เปิดหน้าต่างโชว์โครง NTU-25
@@ -207,6 +210,11 @@ current_time = 0
 prev_time = 0
 # ก่อนลูป: เหมือนเดิม
 
+# ==== YOLO configs (ADD) ====
+YOLO_CONF = 0.35       # กรอง box ที่มั่นใจพอ
+YOLO_IOU  = 0.45
+MAX_PEOPLE = 5         # จำกัดคน/เฟรม (กันช้า)
+
 while True:
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
@@ -222,40 +230,63 @@ while True:
     # เขียน FPS ก่อน
     cv2.putText(BGR_time, f"FPS: {round(fps, 1)}",
                 (10, 50), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
+    
+    # ==== per-frame storage (ADD) ====
+    frame_ntu25_list = []   # เก็บ ntu25 ของแต่ละคนในเฟรมนี้
+    # ==== YOLO detect persons (REPLACE) ====
+    results = yolo_model(BGR, conf=YOLO_CONF, iou=YOLO_IOU, classes=[0], verbose=False)
 
-    RGB = cv2.cvtColor(BGR, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=RGB)
-    result = detector.detect(mp_image)
+    # จัดเรียง box ตามความมั่นใจ สูง→ต่ำ (ADD)
+    boxes = results[0].boxes
+    if boxes is None: boxes = []
+    # แปลงเป็น list ของ (score, xyxy, cls)
+    det_list = []
+    for b in boxes:
+        score = float(b.conf[0])
+        xyxy  = b.xyxy[0].tolist()
+        det_list.append((score, xyxy))
+    det_list.sort(key=lambda x: x[0], reverse=True)
+    det_list = det_list[:MAX_PEOPLE]
 
-    # แปลง 33 -> 25 (มีอยู่แล้ว)
-    h, w = RGB.shape[:2]
-    mp33 = _extract_mp33_xyz(result, w, h, use_pixel=USE_PIXEL)
-    if mp33 is not None:
+    # ==== loop people (REPLACE) ====
+    H, W = BGR.shape[:2]
+    for score, (x1, y1, x2, y2) in det_list:
+        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+        # clip ขอบ (ADD)
+        x1 = max(0, min(x1, W-1)); x2 = max(0, min(x2, W-1))
+        y1 = max(0, min(y1, H-1)); y2 = max(0, min(y2, H-1))
+        if x2 <= x1 or y2 <= y1: 
+            continue
+
+        crop = BGR[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        RGB_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=RGB_crop)
+        result = detector.detect(mp_image)
+
+        h, w = RGB_crop.shape[:2]
+        mp33 = _extract_mp33_xyz(result, w, h, use_pixel=USE_PIXEL)
+        if mp33 is None:
+            continue
+
         ntu25 = convert_mediapipe33_to_ntu25(mp33)
-        ntu25_sequence.append(ntu25)
+        # shift กลับสู่พิกัดภาพเต็ม (ADD)
+        ntu25[:, 0] += x1
+        ntu25[:, 1] += y1
 
-        # counter เฟรม
-        cv2.putText(BGR_time, f"NTU25 frames: {len(ntu25_sequence)}",
-                    (10, 80), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+        # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (ADD)
+        frame_ntu25_list.append(ntu25)
 
-        # วาด NTU-25
-        if SHOW_NTU:
-            if REPLACE_ANNOTATED:
-                ntu_vis = BGR.copy()
-                _draw_ntu25_on_image(ntu_vis, ntu25, use_pixel=USE_PIXEL)
-                cv2.imshow("Annotated", ntu_vis)
-            else:
-                ntu_vis = BGR.copy()
-                _draw_ntu25_on_image(ntu_vis, ntu25, use_pixel=USE_PIXEL)
-                cv2.imshow("NTU-25", ntu_vis)
-
-    # ✅ แก้จุดที่ 2: อย่าเขียนทับ Annotated ถ้า REPLACE_ANNOTATED=True
-    if not (SHOW_NTU and REPLACE_ANNOTATED):
-        annotated = draw_landmarks_on_image(RGB, result)
-        cv2.imshow("Annotated", cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
-
-    # ✅ แก้จุดที่ 3: มาโชว์ Original Frame ตรงนี้ หลังใส่ข้อความครบ
-    cv2.imshow("Original Frame", BGR_time)
+        # วาด skeleton ของคนนี้ (UNCHANGED)
+        _draw_ntu25_on_image(BGR_time, ntu25, use_pixel=True)
+    
+    # ==== push per-frame list (ADD) ====
+    # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
+    ntu25_sequence.append(frame_ntu25_list)
+    
+    cv2.imshow("YOLO + Pose", BGR_time)
 
     if cv2.waitKey(1) == ord("q"):
         break
@@ -265,8 +296,8 @@ while True:
 cam.release()
 cv2.destroyAllWindows()
 
-if SAVE_NPY and len(ntu25_sequence) > 0:
-    seq = np.stack(ntu25_sequence, axis=0)  # (T, 25, 3)
-    np.save(SAVE_PATH, seq)
-    print(f"✅ Saved NTU25 sequence: {seq.shape} -> {SAVE_PATH}")
+# if SAVE_NPY and len(ntu25_sequence) > 0:
+#     seq = np.stack(ntu25_sequence, axis=0)  # (T, 25, 3)
+#     np.save(SAVE_PATH, seq)
+#     print(f"✅ Saved NTU25 sequence: {seq.shape} -> {SAVE_PATH}")
 # ================================================================
