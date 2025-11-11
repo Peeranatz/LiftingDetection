@@ -2,10 +2,10 @@ import os
 import cv2
 from visualize import *
 import time
+import torch
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
-import numpy as np
 
 import numpy as np
 import mediapipe as mp
@@ -13,20 +13,59 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from ultralytics import YOLO
 
+from models.stgcn_model import STGCN
+
 yolo_model = YOLO("/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/HumanBox_Insight_YOLO/model/human.pt")
 
 # ===================== [ADDED] NTU-25 drawing config =====================
 SHOW_NTU = True          # เปิดหน้าต่างโชว์โครง NTU-25
 REPLACE_ANNOTATED = False # True = ใช้ NTU-25 แทนหน้าต่าง "Annotated"
 
-# คู่กระดูก (edges) ของ NTU-25: ใช้ index แบบ 0-based (ตรงกับ array ขนาด 25)
+
+# คู่เชื่อมต่อของ Kinect v2 / NTU-RGB+D (25 joints)
 NTU_EDGES = [
-    (0,1),(1,2),(2,3),(2,20),
-    (0,16),(16,17),(17,18),(18,19),
-    (0,12),(12,13),(13,14),(14,15),
-    (2,4),(4,5),(5,6),(6,21),(6,22),
-    (2,8),(8,9),(9,10),(10,23),(10,24),
+    (0, 1), (1, 20), (2, 20), (3, 2), (4, 20),
+    (5, 4), (6, 5), (7, 6), (8, 20), (9, 8),
+    (10, 9), (11, 10), (12, 0), (13, 12), (14, 13),
+    (15, 14), (16, 0), (17, 16), (18, 17), (19, 18),
+    (20, 20), (21, 22), (22, 7), (23, 24), (24, 11)
 ]
+
+
+def preprocess_ntu25_sequence(ntu_sequence, T=300):
+    """
+    ntu_sequence : list ความยาว T' แต่ละ element คือ list ของคนในเฟรม
+                   แต่ละคนมี shape (25,3)
+    เราจะเลือก "คนแรก" ของแต่ละเฟรม แล้วแปลงเป็นเทนเซอร์ (1,3,T,25)
+    เพื่อส่งเข้า ST-GCN (ตอนเทรนใช้ input [B,3,300,25])
+    """
+    # ดึงเฉพาะเฟรมที่มีคน และใช้คนแรกในเฟรม
+    frames = []
+    for frame_people in ntu_sequence:
+        if len(frame_people) == 0:
+            continue
+        frames.append(frame_people[0])   # คน index 0
+
+    if len(frames) == 0:
+        return None
+
+    seq = np.stack(frames, axis=0)   # (T',25,3)
+
+    # pad หรือ crop ให้ยาว T (=300)
+    if seq.shape[0] < T:
+        pad_len = T - seq.shape[0]
+        pad = np.zeros((pad_len, 25, 3), dtype=np.float32)
+        seq = np.concatenate([seq, pad], axis=0)
+    else:
+        seq = seq[:T]
+
+    # transpose → (3,T,25)
+    seq = np.transpose(seq, (2, 0, 1))   # (3, T, 25)
+
+    # เพิ่ม batch dim → (1,3,T,25)
+    seq = np.expand_dims(seq, axis=0).astype(np.float32)
+
+    return torch.from_numpy(seq)
 
 def _draw_ntu25_on_image(bgr_image, ntu25_xyz, use_pixel=True):
     """
@@ -202,9 +241,44 @@ cam = cv2.VideoCapture(
     "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_2.mp4"
 )
 
+# ========== โหลดโมเดล ST-GCN ==========
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model_path = "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/GNN/models/stgcn_best_model.pth"  # แก้ path ให้ตรงของคุณ
+
+# ===== สร้าง Adjacency Matrix (A) =====
+num_nodes = 25
+pairs = [
+    (0, 1), (1, 20), (2, 20), (3, 2), (4, 20), (5, 4), (6, 5),
+    (7, 6), (8, 20), (9, 8), (10, 9), (11, 10), (12, 0),
+    (13, 12), (14, 13), (15, 14), (16, 0), (17, 16), (18, 17),
+    (19, 18), (20, 20), (21, 22), (22, 7), (23, 24), (24, 11)
+]
+A = np.zeros((num_nodes, num_nodes))
+for i, j in pairs:
+    A[i, j] = 1
+    A[j, i] = 1
+# =====================================
+
+# สร้างโมเดลเปล่า
+stgcn_model = STGCN(num_classes=60, in_channels=3, num_nodes=25, A=A)
+stgcn_model.register_buffer('A', torch.tensor(A, dtype=torch.float32))
+stgcn_model.load_state_dict(torch.load(model_path, map_location=device))
+
+stgcn_model = stgcn_model.to(device)
+stgcn_model.eval()
+
+print("✅ โหลดโมเดล ST-GCN สำเร็จ พร้อมใช้งาน inference แล้ว!")
+# ======================================
+
 # ===================== [ADDED] buffer สำหรับลำดับ NTU25 =====================
 ntu25_sequence = []   # จะเก็บเป็นรูป (T, 25, 3)
 # ============================================================================
+
+# ===================== [ADDED] =====================
+person_buffers = {}   # key = person index, value = list ของ ntu25 ต่อเฟรม
+person_actions = {}   # เก็บชื่อ action ล่าสุดของแต่ละคน
+# ==================================================
 
 current_time = 0
 prev_time = 0
@@ -215,47 +289,104 @@ YOLO_CONF = 0.35       # กรอง box ที่มั่นใจพอ
 YOLO_IOU  = 0.45
 MAX_PEOPLE = 5         # จำกัดคน/เฟรม (กันช้า)
 
+ACTION_NAMES = [
+    "drink water",                # A1
+    "eat meal",                   # A2
+    "brush teeth",                # A3
+    "brush hair",                 # A4
+    "drop",                       # A5
+    "pick up",                    # A6
+    "throw",                      # A7
+    "sit down",                   # A8
+    "stand up",                   # A9
+    "clapping",                   # A10
+    "reading",                    # A11
+    "writing",                    # A12
+    "tear up paper",              # A13
+    "put on jacket",              # A14
+    "take off jacket",            # A15
+    "put on a shoe",              # A16
+    "take off a shoe",            # A17
+    "put on glasses",             # A18
+    "take off glasses",           # A19
+    "put on a hat/cap",           # A20
+    "take off a hat/cap",         # A21
+    "cheer up",                   # A22
+    "hand waving",                # A23
+    "kicking something",          # A24
+    "reach into pocket",          # A25
+    "hopping",                    # A26
+    "jump up",                    # A27
+    "phone call",                 # A28
+    "play with phone/tablet",     # A29
+    "type on a keyboard",         # A30
+    "point to something",         # A31
+    "taking a selfie",            # A32
+    "check time (from watch)",    # A33
+    "rub two hands",              # A34
+    "nod head/bow",               # A35
+    "shake head",                 # A36
+    "wipe face",                  # A37
+    "salute",                     # A38
+    "put palms together",         # A39
+    "cross hands in front",       # A40
+    "sneeze/cough",               # A41
+    "staggering",                 # A42
+    "falling down",               # A43
+    "headache",                   # A44
+    "chest pain",                 # A45
+    "back pain",                  # A46
+    "neck pain",                  # A47
+    "nausea/vomiting",            # A48
+    "fan self",                   # A49
+    "punch/slap",                 # A50
+    "kicking",                    # A51
+    "pushing",                    # A52
+    "pat on back",                # A53
+    "point finger",               # A54
+    "hugging",                    # A55
+    "giving object",              # A56
+    "touch pocket",               # A57
+    "shaking hands",              # A58
+    "walking towards",            # A59
+    "walking apart"               # A60
+]
+
+current_action_text = "..."   # ข้อความล่าสุดที่จะแสดงบนจอ
+
+
 while True:
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
     prev_time = current_time
 
-    # ✅ แก้จุดที่ 1
     ret, BGR = cam.read()
     if not ret:
         print("Video ended or cannot read frame.")
         break
     BGR_time = BGR.copy()
 
-    # เขียน FPS ก่อน
     cv2.putText(BGR_time, f"FPS: {round(fps, 1)}",
                 (10, 50), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
-    
-    # ==== per-frame storage (ADD) ====
-    frame_ntu25_list = []   # เก็บ ntu25 ของแต่ละคนในเฟรมนี้
-    # ==== YOLO detect persons (REPLACE) ====
-    results = yolo_model(BGR, conf=YOLO_CONF, iou=YOLO_IOU, classes=[0], verbose=False)
 
-    # จัดเรียง box ตามความมั่นใจ สูง→ต่ำ (ADD)
+    results = yolo_model(BGR, conf=YOLO_CONF, iou=YOLO_IOU, classes=[0], verbose=False)
     boxes = results[0].boxes
-    if boxes is None: boxes = []
-    # แปลงเป็น list ของ (score, xyxy, cls)
     det_list = []
-    for b in boxes:
-        score = float(b.conf[0])
-        xyxy  = b.xyxy[0].tolist()
-        det_list.append((score, xyxy))
+    if boxes is not None:
+        for b in boxes:
+            score = float(b.conf[0])
+            xyxy = b.xyxy[0].tolist()
+            det_list.append((score, xyxy))
     det_list.sort(key=lambda x: x[0], reverse=True)
     det_list = det_list[:MAX_PEOPLE]
 
-    # ==== loop people (REPLACE) ====
     H, W = BGR.shape[:2]
-    for score, (x1, y1, x2, y2) in det_list:
+
+    for pid, (score, (x1, y1, x2, y2)) in enumerate(det_list):
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-        # clip ขอบ (ADD)
         x1 = max(0, min(x1, W-1)); x2 = max(0, min(x2, W-1))
         y1 = max(0, min(y1, H-1)); y2 = max(0, min(y2, H-1))
-        if x2 <= x1 or y2 <= y1: 
+        if x2 <= x1 or y2 <= y1:
             continue
 
         crop = BGR[y1:y2, x1:x2]
@@ -272,45 +403,49 @@ while True:
             continue
 
         ntu25 = convert_mediapipe33_to_ntu25(mp33)
-        # shift กลับสู่พิกัดภาพเต็ม (ADD)
         ntu25[:, 0] += x1
         ntu25[:, 1] += y1
 
-        # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (ADD)
-        frame_ntu25_list.append(ntu25)
+        # === Buffer ต่อคน ===
+        if pid not in person_buffers:
+            person_buffers[pid] = []
+        if len(person_buffers[pid]) > 300:
+            person_buffers[pid].pop(0)
+        person_buffers[pid].append(ntu25)
 
-        # วาด skeleton ของคนนี้ (UNCHANGED)
+        # === Predict ต่อคน ===
+        if len(person_buffers[pid]) >= 30 and (len(person_buffers[pid]) % 10 == 0):
+            data_tensor = preprocess_ntu25_sequence([person_buffers[pid]], T=300)
+            if data_tensor is not None:
+                data_tensor = data_tensor.to(device)
+                with torch.no_grad():
+                    out = stgcn_model(data_tensor)
+                    pred_id = int(out.argmax(dim=1).item())
+                if 0 <= pred_id < len(ACTION_NAMES):
+                    person_actions[pid] = ACTION_NAMES[pred_id]
+                else:
+                    person_actions[pid] = f"class {pred_id}"
+
+        # === วาด Skeleton & BBox ===
         _draw_ntu25_on_image(BGR_time, ntu25, use_pixel=True)
-        
-        # ==== Draw YOLO bounding box and class label (ADD) ====
-        # วาดกรอบสี่เหลี่ยม
         cv2.rectangle(BGR_time, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # สร้างข้อความ: class + confidence
         label = f"person {score:.2f}"
-
-        # หาความกว้างของข้อความ เพื่อขยายพื้นหลัง
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-
-        # วาดพื้นหลังสีดำข้างบน bbox (กันอ่านยาก)
         cv2.rectangle(BGR_time, (x1, y1 - th - 4), (x1 + tw + 4, y1), (0, 255, 0), -1)
-
-        # วาดข้อความ class
         cv2.putText(BGR_time, label, (x1 + 2, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
-        
-        
-    
-    # ==== push per-frame list (ADD) ====
-    # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
-    ntu25_sequence.append(frame_ntu25_list)
-    
-    cv2.imshow("YOLO + Pose", BGR_time)
+        # === วาด Action ต่อคน ===
+        action_text = person_actions.get(pid, "...")
+        cv2.putText(BGR_time, f"{action_text}",
+                    (x1 + 5, y1 - 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
+    # === แสดงภาพ ===
+    cv2.imshow("YOLO + Pose", BGR_time)
     if cv2.waitKey(1) == ord("q"):
         break
-
 
 # ===================== [ADDED] cleanup & save =====================
 cam.release()
