@@ -238,7 +238,7 @@ options = vision.PoseLandmarkerOptions(
 detector = vision.PoseLandmarker.create_from_options(options)
 
 cam = cv2.VideoCapture(
-    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/data/test_video/test_video_2.mp4"
+    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/video_datasets/Carrying/carry_on_shoulder_01.mp4"
 )
 
 # ========== โหลดโมเดล ST-GCN ==========
@@ -274,11 +274,6 @@ print("✅ โหลดโมเดล ST-GCN สำเร็จ พร้อม
 # ===================== [ADDED] buffer สำหรับลำดับ NTU25 =====================
 ntu25_sequence = []   # จะเก็บเป็นรูป (T, 25, 3)
 # ============================================================================
-
-# ===================== [ADDED] =====================
-person_buffers = {}   # key = person index, value = list ของ ntu25 ต่อเฟรม
-person_actions = {}   # เก็บชื่อ action ล่าสุดของแต่ละคน
-# ==================================================
 
 current_time = 0
 prev_time = 0
@@ -354,39 +349,47 @@ ACTION_NAMES = [
 
 current_action_text = "..."   # ข้อความล่าสุดที่จะแสดงบนจอ
 
-
 while True:
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
     prev_time = current_time
 
+    # ✅ แก้จุดที่ 1
     ret, BGR = cam.read()
     if not ret:
         print("Video ended or cannot read frame.")
         break
     BGR_time = BGR.copy()
 
+    # เขียน FPS ก่อน
     cv2.putText(BGR_time, f"FPS: {round(fps, 1)}",
                 (10, 50), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
-
+    
+    # ==== per-frame storage (ADD) ====
+    frame_ntu25_list = []   # เก็บ ntu25 ของแต่ละคนในเฟรมนี้
+    # ==== YOLO detect persons (REPLACE) ====
     results = yolo_model(BGR, conf=YOLO_CONF, iou=YOLO_IOU, classes=[0], verbose=False)
+
+    # จัดเรียง box ตามความมั่นใจ สูง→ต่ำ (ADD)
     boxes = results[0].boxes
+    if boxes is None: boxes = []
+    # แปลงเป็น list ของ (score, xyxy, cls)
     det_list = []
-    if boxes is not None:
-        for b in boxes:
-            score = float(b.conf[0])
-            xyxy = b.xyxy[0].tolist()
-            det_list.append((score, xyxy))
+    for b in boxes:
+        score = float(b.conf[0])
+        xyxy  = b.xyxy[0].tolist()
+        det_list.append((score, xyxy))
     det_list.sort(key=lambda x: x[0], reverse=True)
     det_list = det_list[:MAX_PEOPLE]
 
+    # ==== loop people (REPLACE) ====
     H, W = BGR.shape[:2]
-
-    for pid, (score, (x1, y1, x2, y2)) in enumerate(det_list):
+    for score, (x1, y1, x2, y2) in det_list:
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+        # clip ขอบ (ADD)
         x1 = max(0, min(x1, W-1)); x2 = max(0, min(x2, W-1))
         y1 = max(0, min(y1, H-1)); y2 = max(0, min(y2, H-1))
-        if x2 <= x1 or y2 <= y1:
+        if x2 <= x1 or y2 <= y1: 
             continue
 
         crop = BGR[y1:y2, x1:x2]
@@ -403,49 +406,65 @@ while True:
             continue
 
         ntu25 = convert_mediapipe33_to_ntu25(mp33)
+        # shift กลับสู่พิกัดภาพเต็ม (ADD)
         ntu25[:, 0] += x1
         ntu25[:, 1] += y1
 
-        # === Buffer ต่อคน ===
-        if pid not in person_buffers:
-            person_buffers[pid] = []
-        if len(person_buffers[pid]) > 300:
-            person_buffers[pid].pop(0)
-        person_buffers[pid].append(ntu25)
+        # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (ADD)
+        frame_ntu25_list.append(ntu25)
 
-        # === Predict ต่อคน ===
-        if len(person_buffers[pid]) >= 30 and (len(person_buffers[pid]) % 10 == 0):
-            data_tensor = preprocess_ntu25_sequence([person_buffers[pid]], T=300)
-            if data_tensor is not None:
-                data_tensor = data_tensor.to(device)
-                with torch.no_grad():
-                    out = stgcn_model(data_tensor)
-                    pred_id = int(out.argmax(dim=1).item())
-                if 0 <= pred_id < len(ACTION_NAMES):
-                    person_actions[pid] = ACTION_NAMES[pred_id]
-                else:
-                    person_actions[pid] = f"class {pred_id}"
-
-        # === วาด Skeleton & BBox ===
+        # วาด skeleton ของคนนี้ (UNCHANGED)
         _draw_ntu25_on_image(BGR_time, ntu25, use_pixel=True)
+        
+        # ==== Draw YOLO bounding box and class label (ADD) ====
+        # วาดกรอบสี่เหลี่ยม
         cv2.rectangle(BGR_time, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
+        # สร้างข้อความ: class + confidence
         label = f"person {score:.2f}"
+
+        # หาความกว้างของข้อความ เพื่อขยายพื้นหลัง
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+
+        # วาดพื้นหลังสีดำข้างบน bbox (กันอ่านยาก)
         cv2.rectangle(BGR_time, (x1, y1 - th - 4), (x1 + tw + 4, y1), (0, 255, 0), -1)
+
+        # วาดข้อความ class
         cv2.putText(BGR_time, label, (x1 + 2, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+        
+    
+    # ==== push per-frame list (ADD) ====
+    # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
+    ntu25_sequence.append(frame_ntu25_list)
+    
+    # ========= ST-GCN PREDICT ทุก ๆ 30 เฟรม =========
+    if len(ntu25_sequence) >= 30 and (len(ntu25_sequence) % 10 == 0):
+        # สร้างเทนเซอร์ (1,3,300,25)
+        data_tensor = preprocess_ntu25_sequence(ntu25_sequence, T=300)
+        if data_tensor is not None:
+            data_tensor = data_tensor.to(device)
+            with torch.no_grad():
+                out = stgcn_model(data_tensor)   # shape: (1, num_classes)
+                pred_id = int(out.argmax(dim=1).item())
 
-        # === วาด Action ต่อคน ===
-        action_text = person_actions.get(pid, "...")
-        cv2.putText(BGR_time, f"{action_text}",
-                    (x1 + 5, y1 - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+            # แปลง id → ชื่อคลาส
+            if 0 <= pred_id < len(ACTION_NAMES):
+                current_action_text = ACTION_NAMES[pred_id]
+            else:
+                current_action_text = f"class {pred_id}"
+    # ===============================================
 
-    # === แสดงภาพ ===
+    # วาด action text บนภาพ (ใช้ค่าล่าสุด)
+    cv2.putText(BGR_time, f"Action: {current_action_text}",
+                (10, 100), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2)
+    
+    
     cv2.imshow("YOLO + Pose", BGR_time)
+
     if cv2.waitKey(1) == ord("q"):
         break
+
 
 # ===================== [ADDED] cleanup & save =====================
 cam.release()
