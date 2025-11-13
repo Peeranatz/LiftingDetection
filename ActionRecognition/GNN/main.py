@@ -421,7 +421,35 @@ while True:
         # shift กลับสู่พิกัดภาพเต็ม (ADD)
         ntu25[:, 0] += x1
         ntu25[:, 1] += y1
+        
+        # ========== DEBUG SCALE CHECK ==========
+        if len(ntu25_sequence) < 3:   # print เฉพาะเฟรมแรก ๆ กัน console ระเบิด
+            print("\n[DEBUG] Skeleton NTU25 scale:")
+            print("min:", np.min(ntu25, axis=0))
+            print("max:", np.max(ntu25, axis=0))
+            print("mean:", np.mean(ntu25, axis=0))
+            print("std:", np.std(ntu25, axis=0))
+        # =======================================
+        
+        # ========== NORMALIZE SKELETON ==========
+        # 1) ให้ SpineBase (joint 0) เป็นจุดอ้างอิง (0,0,0)
+        hip = ntu25[0].copy()            # joint 0 = SpineBase ตามที่เราจัดไว้
+        ntu25 = ntu25 - hip              # เลื่อนทั้ง skeleton ให้กระดูกสันหลังส่วนล่างอยู่ที่ (0,0,0)
 
+        # 2) Normalize ด้วย "ความสูงร่างกาย" (ตามแกน y)
+        height = np.max(ntu25[:, 1]) - np.min(ntu25[:, 1])
+        if height > 1e-3:                # กัน divide by zero
+            ntu25 = ntu25 / height       # scale ให้ตัวคนสูง ~1 หน่วย
+        # =======================================
+
+        # (ถ้าอยากดูสเกลหลัง normalize)
+        if len(ntu25_sequence) < 3:
+            print("\n[DEBUG] Skeleton NTU25 scale (after normalize):")
+            print("min:", np.min(ntu25, axis=0))
+            print("max:", np.max(ntu25, axis=0))
+            print("mean:", np.mean(ntu25, axis=0))
+            print("std:", np.std(ntu25, axis=0))
+                
         # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (ADD)
         frame_ntu25_list.append(ntu25)
 
@@ -439,92 +467,4 @@ while True:
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
 
         # วาดพื้นหลังสีดำข้างบน bbox (กันอ่านยาก)
-        cv2.rectangle(BGR_time, (x1, y1 - th - 4), (x1 + tw + 4, y1), (0, 255, 0), -1)
-
-        # วาดข้อความ class
-        cv2.putText(BGR_time, label, (x1 + 2, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-        
-    
-    # ==== push per-frame list (ADD) ====
-    # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
-    ntu25_sequence.append(frame_ntu25_list)
-    
-    # ========= ST-GCN PREDICT ทุก ๆ 30 เฟรม =========
-    if len(ntu25_sequence) >= 30 and (len(ntu25_sequence) % 10 == 0):
-        # สร้างเทนเซอร์ (1,3,300,25)
-        data_tensor = preprocess_ntu25_sequence(ntu25_sequence, T=300)
-        if data_tensor is not None:
-            data_tensor = data_tensor.to(device)
-            with torch.no_grad():
-                out = stgcn_model(data_tensor)   # shape: (1, num_classes)
-                pred_id = int(out.argmax(dim=1).item())
-                
-                # คำนวณ prob ของ class ที่ทำนาย
-                prob = F.softmax(out, dim=1)
-                pred_prob = float(prob[0, pred_id])
-                print(f"[DEBUG] Predicted: {pred_id} ({ACTION_NAMES[pred_id]}), confidence={pred_prob:.3f}")
-
-                predict_history.append(pred_id)
-
-            # แปลง id → ชื่อคลาส
-            if 0 <= pred_id < len(ACTION_NAMES):
-                current_action_text = ACTION_NAMES[pred_id]
-            else:
-                current_action_text = f"class {pred_id}"
-    # ===============================================
-
-    # วาด action text บนภาพ (ใช้ค่าล่าสุด)
-    cv2.putText(BGR_time, f"Action: {current_action_text}",
-                (10, 100), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2)
-    
-    
-    cv2.imshow("YOLO + Pose", BGR_time)
-
-    if cv2.waitKey(1) == ord("q"):
-        break
-
-
-# ===================== [ADDED] cleanup & save =====================
-cam.release()
-cv2.destroyAllWindows()
-
-# ================== SUMMARY DEBUG REPORT ==================
-print("\n========== VIDEO SUMMARY ==========")
-print(f"Total frames read           : {total_frames}")
-print(f"Frames with detected person : {frames_with_person}")
-print(f"Frames without person       : {total_frames - frames_with_person}")
-
-# คนเฉลี่ยต่อเฟรม
-if len(people_per_frame) > 0:
-    avg_people = sum(people_per_frame) / len(people_per_frame)
-    max_people = max(people_per_frame)
-    print(f"Average people per frame    : {avg_people:.2f}")
-    print(f"Max people detected         : {max_people}")
-
-# Sequence length
-print(f"\nNTU25 sequence length       : {len(ntu25_sequence)} frames")
-
-# History of predictions
-if len(predict_history) > 0:
-    print("\nPrediction history (class IDs):")
-    print(predict_history[:20], "..." if len(predict_history) > 20 else "")
-    
-    # นับว่าโมเดลเดาอะไรมากที่สุด
-    from collections import Counter
-    cnt = Counter(predict_history)
-    print("\nMost frequent prediction:")
-    most_common_id, freq = cnt.most_common(1)[0]
-    print(f"  Class ID: {most_common_id}  →  '{ACTION_NAMES[most_common_id]}'")
-    print(f"  Count   : {freq}")
-else:
-    print("\nNo predictions were made.")
-
-print("\n========== END SUMMARY ==========\n")
-
-
-# if SAVE_NPY and len(ntu25_sequence) > 0:
-#     seq = np.stack(ntu25_sequence, axis=0)  # (T, 25, 3)
-#     np.save(SAVE_PATH, seq)
-#     print(f"✅ Saved NTU25 sequence: {seq.shape} -> {SAVE_PATH}")
-# ================================================================
+        cv2.rectangle(BGR_time, (x1, 
