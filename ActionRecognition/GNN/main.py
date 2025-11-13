@@ -3,6 +3,7 @@ import cv2
 from visualize import *
 import time
 import torch
+import torch.nn.functional as F
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
@@ -349,6 +350,12 @@ ACTION_NAMES = [
 
 current_action_text = "..."   # ข้อความล่าสุดที่จะแสดงบนจอ
 
+# ====== DEBUG INFO ======
+total_frames = 0
+frames_with_person = 0
+predict_history = []
+people_per_frame = []
+
 while True:
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
@@ -356,6 +363,7 @@ while True:
 
     # ✅ แก้จุดที่ 1
     ret, BGR = cam.read()
+    total_frames += 1
     if not ret:
         print("Video ended or cannot read frame.")
         break
@@ -374,17 +382,21 @@ while True:
     boxes = results[0].boxes
     if boxes is None: boxes = []
     # แปลงเป็น list ของ (score, xyxy, cls)
-    det_list = []
+    del_list = []
     for b in boxes:
         score = float(b.conf[0])
         xyxy  = b.xyxy[0].tolist()
-        det_list.append((score, xyxy))
-    det_list.sort(key=lambda x: x[0], reverse=True)
-    det_list = det_list[:MAX_PEOPLE]
+        del_list.append((score, xyxy))
+    del_list.sort(key=lambda x: x[0], reverse=True)
+    del_list = del_list[:MAX_PEOPLE]
+    
+    people_per_frame.append(len(del_list))
+    if len(del_list) > 0:
+        frames_with_person += 1
 
     # ==== loop people (REPLACE) ====
     H, W = BGR.shape[:2]
-    for score, (x1, y1, x2, y2) in det_list:
+    for score, (x1, y1, x2, y2) in del_list:
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
         # clip ขอบ (ADD)
         x1 = max(0, min(x1, W-1)); x2 = max(0, min(x2, W-1))
@@ -447,6 +459,13 @@ while True:
             with torch.no_grad():
                 out = stgcn_model(data_tensor)   # shape: (1, num_classes)
                 pred_id = int(out.argmax(dim=1).item())
+                
+                # คำนวณ prob ของ class ที่ทำนาย
+                prob = F.softmax(out, dim=1)
+                pred_prob = float(prob[0, pred_id])
+                print(f"[DEBUG] Predicted: {pred_id} ({ACTION_NAMES[pred_id]}), confidence={pred_prob:.3f}")
+
+                predict_history.append(pred_id)
 
             # แปลง id → ชื่อคลาส
             if 0 <= pred_id < len(ACTION_NAMES):
@@ -469,6 +488,40 @@ while True:
 # ===================== [ADDED] cleanup & save =====================
 cam.release()
 cv2.destroyAllWindows()
+
+# ================== SUMMARY DEBUG REPORT ==================
+print("\n========== VIDEO SUMMARY ==========")
+print(f"Total frames read           : {total_frames}")
+print(f"Frames with detected person : {frames_with_person}")
+print(f"Frames without person       : {total_frames - frames_with_person}")
+
+# คนเฉลี่ยต่อเฟรม
+if len(people_per_frame) > 0:
+    avg_people = sum(people_per_frame) / len(people_per_frame)
+    max_people = max(people_per_frame)
+    print(f"Average people per frame    : {avg_people:.2f}")
+    print(f"Max people detected         : {max_people}")
+
+# Sequence length
+print(f"\nNTU25 sequence length       : {len(ntu25_sequence)} frames")
+
+# History of predictions
+if len(predict_history) > 0:
+    print("\nPrediction history (class IDs):")
+    print(predict_history[:20], "..." if len(predict_history) > 20 else "")
+    
+    # นับว่าโมเดลเดาอะไรมากที่สุด
+    from collections import Counter
+    cnt = Counter(predict_history)
+    print("\nMost frequent prediction:")
+    most_common_id, freq = cnt.most_common(1)[0]
+    print(f"  Class ID: {most_common_id}  →  '{ACTION_NAMES[most_common_id]}'")
+    print(f"  Count   : {freq}")
+else:
+    print("\nNo predictions were made.")
+
+print("\n========== END SUMMARY ==========\n")
+
 
 # if SAVE_NPY and len(ntu25_sequence) > 0:
 #     seq = np.stack(ntu25_sequence, axis=0)  # (T, 25, 3)
