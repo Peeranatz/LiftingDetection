@@ -55,19 +55,92 @@ NTU_EDGES = [
 ]
 
 
+# ============================================================
+# >>> FIXED VERSION (ให้เหมือนตอนเทรน ST-GCN)
+#    - ใช้ window 300 เฟรม normalize เหมือน normalize_skeleton(x)
+#    - channel 0,1 = X,Y   / channel 2 = confidence = 1.0
+#    - ทำ normalize ที่ระดับ sequence ไม่ใช่ทีละเฟรม
+# ============================================================
 def preprocess_ntu25_sequence(ntu_sequence, T=300):
     """
     ntu_sequence : list ความยาว T' แต่ละ element คือ list ของคนในเฟรม
-                   แต่ละคนมี shape (25,3)
-    เราจะเลือก "คนแรก" ของแต่ละเฟรม แล้วแปลงเป็นเทนเซอร์ (1,3,T,25)
-    เพื่อส่งเข้า ST-GCN (ตอนเทรนใช้ input [B,3,300,25])
+                   แต่ละคนมี shape (25,3) (raw pixel)
+    เราจะ:
+      - เลือก "คนแรก" ของแต่ละเฟรม (เพราะ sort ด้วย score แล้ว)
+      - pad/crop ให้ T = 300
+      - แปลงเป็น (1,3,T,25) โดย:
+          ch0, ch1 = X,Y
+          ch2      = confidence = 1.0
+      - normalize เหมือนตอนเทรน normalize_skeleton(x)
     """
-    # ดึงเฉพาะเฟรมที่มีคน และใช้คนแรกในเฟรม
+
     frames = []
     for frame_people in ntu_sequence:
         if len(frame_people) == 0:
             continue
-        best_person = frame_people[0]  # เพราะ list คุณ sort ด้วย score สูงสุดอยู่แล้ว
+        best_person = frame_people[0]  # คนแรก = score สูงสุด
+        frames.append(best_person)  # (25,3)
+
+    if len(frames) == 0:
+        return None
+
+    # (T',25,3)
+    seq = np.stack(frames, axis=0).astype(np.float32)
+
+    # pad หรือ crop ให้ยาว T (=300)
+    if seq.shape[0] < T:
+        pad_len = T - seq.shape[0]
+        pad = np.zeros((pad_len, 25, 3), dtype=np.float32)
+        seq = np.concatenate([seq, pad], axis=0)  # (T,25,3)
+    else:
+        seq = seq[:T]  # (T,25,3)
+
+    # -----------------------------
+    # สร้าง x_np = (3,T,25)
+    # ch0 = X, ch1 = Y, ch2 = conf=1.0
+    # -----------------------------
+    x_np = np.zeros((3, T, 25), dtype=np.float32)
+
+    # seq[:, :, 0] = X (T,25)
+    # seq[:, :, 1] = Y (T,25)
+    x_np[0] = seq[:, :, 0]  # X
+    x_np[1] = seq[:, :, 1]  # Y
+    x_np[2] = 1.0  # confidence = 1.0 ทั้งหมด
+
+    # -----------------------------
+    # normalize เหมือนตอนเทรน:
+    # center = joint1 (index0) → x[:, :, 0:1]
+    # bone = shoulderL(4) - shoulderR(8)
+    # scale = mean norm(bone over time)
+    # -----------------------------
+    center = x_np[:, :, 0:1].copy()  # (3,T,1)
+    x_np = x_np - center  # center body
+
+    bone = x_np[:, :, 4] - x_np[:, :, 8]  # (3,T)
+    scale = np.linalg.norm(bone, axis=0).mean() + 1e-6  # scalar
+
+    x_np = x_np / scale
+
+    # เพิ่ม batch dim → (1,3,T,25)
+    x_np = x_np.astype(np.float32)
+    seq_tensor = torch.from_numpy(x_np).unsqueeze(0)  # (1,3,T,25)
+
+    return seq_tensor
+
+
+# =========== เก็บโค้ดเดิมไว้ (ไม่ใช้แล้ว แค่เก็บ reference ตามที่ขอ) ===========
+def preprocess_ntu25_sequence_OLD(ntu_sequence, T=300):
+    """
+    [OLD VERSION] (ไม่ถูกต้องเท่าตอนเทรน เพราะ normalize ต่างกันและใช้ Z เป็น ch2)
+    ntu_sequence : list ความยาว T' แต่ละ element คือ list ของคนในเฟรม
+                   แต่ละคนมี shape (25,3)
+    เราจะเลือก "คนแรก" ของแต่ละเฟรม แล้วแปลงเป็นเทนเซอร์ (1,3,T,25)
+    """
+    frames = []
+    for frame_people in ntu_sequence:
+        if len(frame_people) == 0:
+            continue
+        best_person = frame_people[0]
         frames.append(best_person)
 
     if len(frames) == 0:
@@ -75,7 +148,6 @@ def preprocess_ntu25_sequence(ntu_sequence, T=300):
 
     seq = np.stack(frames, axis=0)  # (T',25,3)
 
-    # pad หรือ crop ให้ยาว T (=300)
     if seq.shape[0] < T:
         pad_len = T - seq.shape[0]
         pad = np.zeros((pad_len, 25, 3), dtype=np.float32)
@@ -85,11 +157,11 @@ def preprocess_ntu25_sequence(ntu_sequence, T=300):
 
     # transpose → (3,T,25)
     seq = np.transpose(seq, (2, 0, 1))  # (3, T, 25)
-
-    # เพิ่ม batch dim → (1,3,T,25)
     seq = np.expand_dims(seq, axis=0).astype(np.float32)
-
     return torch.from_numpy(seq)
+
+
+# ======================================================================
 
 
 def _draw_ntu25_on_image(bgr_image, ntu25_xyz, use_pixel=True):
@@ -254,6 +326,7 @@ def convert_mediapipe33_to_ntu25(mp33):
     return np.stack(ntu25, axis=0).astype(np.float32)
 
 
+# =========== เก็บ normalize_skeleton_inference ไว้ (ไม่ใช้แล้วใน flow ใหม่) ===========
 def normalize_skeleton_inference(ntu25):
     # ntu25: (25,3)
 
@@ -268,7 +341,8 @@ def normalize_skeleton_inference(ntu25):
     return ntu25 / scale
 
 
-# ===================== [/ADDED] =====================================
+# ==========================================================
+
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -313,7 +387,7 @@ options = vision.PoseLandmarkerOptions(
 detector = vision.PoseLandmarker.create_from_options(options)
 
 cam = cv2.VideoCapture(
-    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/GNN/video_test/New10.mp4"
+    "/Users/balast/Desktop/Desktop - All file/LiftingProject/LiftingDetection/ActionRecognition/GNN/video_test/standing_test_video2.mov"
 )
 
 # ========== โหลดโมเดล ST-GCN ==========
@@ -333,12 +407,11 @@ print("✅ โหลดโมเดล ST-GCN สำเร็จ พร้อม
 # ======================================
 
 # ===================== [ADDED] buffer สำหรับลำดับ NTU25 =====================
-ntu25_sequence = []  # จะเก็บเป็นรูป (T, 25, 3)
+ntu25_sequence = []  # จะเก็บเป็นรูป list: แต่ละ element = list คนในเฟรมหนึ่ง ๆ (25,3)
 # ============================================================================
 
 current_time = 0
 prev_time = 0
-# ก่อนลูป: เหมือนเดิม
 
 # ==== YOLO configs (ADD) ====
 YOLO_CONF = 0.35  # กรอง box ที่มั่นใจพอ
@@ -418,10 +491,9 @@ people_per_frame = []
 
 while True:
     current_time = time.time()
-    fps = 1 / (current_time - prev_time)
+    fps = 1 / (current_time - prev_time) if current_time != prev_time else 0.0
     prev_time = current_time
 
-    # ✅ แก้จุดที่ 1
     ret, BGR = cam.read()
     total_frames += 1
     if not ret:
@@ -444,14 +516,14 @@ while True:
 
     # ==== per-frame storage (ADD) ====
     frame_ntu25_list = []  # เก็บ ntu25 ของแต่ละคนในเฟรมนี้
-    # ==== YOLO detect persons (REPLACE) ====
+
+    # ==== YOLO detect persons ====
     results = yolo_model(BGR, conf=YOLO_CONF, iou=YOLO_IOU, classes=[0], verbose=False)
 
-    # จัดเรียง box ตามความมั่นใจ สูง→ต่ำ (ADD)
     boxes = results[0].boxes
     if boxes is None:
         boxes = []
-    # แปลงเป็น list ของ (score, xyxy, cls)
+
     del_list = []
     for b in boxes:
         score = float(b.conf[0])
@@ -464,11 +536,9 @@ while True:
     if len(del_list) > 0:
         frames_with_person += 1
 
-    # ==== loop people (REPLACE) ====
     H, W = BGR.shape[:2]
     for score, (x1, y1, x2, y2) in del_list:
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-        # clip ขอบ (ADD)
         x1 = max(0, min(x1, W - 1))
         x2 = max(0, min(x2, W - 1))
         y1 = max(0, min(y1, H - 1))
@@ -480,9 +550,6 @@ while True:
         if crop.size == 0:
             continue
 
-        # print(f"[YOLO] BBOX: {x1,y1,x2,y2}, score={score:.2f}")
-        # print(f"[YOLO] Crop size: {crop.shape}")
-
         RGB_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=RGB_crop)
         result = detector.detect(mp_image)
@@ -490,71 +557,40 @@ while True:
         h, w = RGB_crop.shape[:2]
         mp33 = _extract_mp33_xyz(result, w, h, use_pixel=USE_PIXEL)
 
-        # print("[MP33] shape:", None if mp33 is None else mp33.shape)
-
         if mp33 is None:
             continue
 
         ntu25 = convert_mediapipe33_to_ntu25(mp33)
-        # shift กลับสู่พิกัดภาพเต็ม (ADD)
+        # shift กลับสู่พิกัดภาพเต็ม
         ntu25[:, 0] += x1
         ntu25[:, 1] += y1
 
-        # print("[NTU25 RAW] min:", ntu25.min(axis=0))
-        # print("[NTU25 RAW] max:", ntu25.max(axis=0))
-        # print("[NTU25 RAW] SpineBase:", ntu25[0])
-        # print("[NTU25 RAW] Neck:", ntu25[2])
-        # print("[NTU25 RAW] L-Wrist:", ntu25[6])
-        # print("[NTU25 RAW] R-Wrist:", ntu25[11])
-
-        # ========== DEBUG SCALE CHECK ==========
+        # ========== DEBUG SCALE CHECK (raw) ==========
         if len(ntu25_sequence) < 3:  # print เฉพาะเฟรมแรก ๆ กัน console ระเบิด
-            print("\n[DEBUG] Skeleton NTU25 scale:")
+            print("\n[DEBUG] Skeleton NTU25 RAW scale:")
             print("min:", np.min(ntu25, axis=0))
             print("max:", np.max(ntu25, axis=0))
             print("mean:", np.mean(ntu25, axis=0))
             print("std:", np.std(ntu25, axis=0))
-        # =======================================
+        # ============================================
 
-        # ========= DRAW SKELETON BEFORE NORMALIZE =========
+        # ========= DRAW SKELETON (raw) =========
         ntu25_raw = ntu25.copy()
         _draw_ntu25_on_image(BGR_time, ntu25_raw, use_pixel=True)
-        # ===================================================
+        # ======================================
 
-        # ========== NORMALIZE SKELETON ==========
-        ntu25 = normalize_skeleton_inference(ntu25)
-        # =======================================
+        # ======= [OLD] per-frame normalize (ไม่ใช้แล้ว) =======
+        # ntu25 = normalize_skeleton_inference(ntu25)
+        # =====================================================
 
-        # print("[NTU25 NORMALIZED] height:", height)
-        # print("[NTU25 NORMALIZED] range X:", ntu25[:,0].min(), ntu25[:,0].max())
-        # print("[NTU25 NORMALIZED] range Y:", ntu25[:,1].min(), ntu25[:,1].max())
-        # print("[NTU25 NORMALIZED] mean:", ntu25.mean(axis=0))
-
-        # (ถ้าอยากดูสเกลหลัง normalize)
-        if len(ntu25_sequence) < 3:
-            print("\n[DEBUG] Skeleton NTU25 scale (after normalize):")
-            print("min:", np.min(ntu25, axis=0))
-            print("max:", np.max(ntu25, axis=0))
-            print("mean:", np.mean(ntu25, axis=0))
-            print("std:", np.std(ntu25, axis=0))
-
-        # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (ADD)
+        # เก็บของ "คนนี้" ไว้ในเฟรมนี้ (raw pixel, ยังไม่ normalize)
         frame_ntu25_list.append(ntu25)
 
-        # ==== Draw YOLO bounding box and class label (ADD) ====
-        # วาดกรอบสี่เหลี่ยม
+        # ==== Draw YOLO bounding box and class label ====
         cv2.rectangle(BGR_time, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-        # สร้างข้อความ: class + confidence
         label = f"person {score:.2f}"
-
-        # หาความกว้างของข้อความ เพื่อขยายพื้นหลัง
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-
-        # วาดพื้นหลังสีดำข้างบน bbox (กันอ่านยาก)
         cv2.rectangle(BGR_time, (x1, y1 - th - 4), (x1 + tw + 4, y1), (0, 0, 255), -1)
-
-        # วาดข้อความ class
         cv2.putText(
             BGR_time,
             label,
@@ -565,29 +601,23 @@ while True:
             2,
         )
 
-    # ==== push per-frame list (ADD) ====
-    # เก็บเป็นลิสต์ของ (25,3) ต่อคนในเฟรมนี้; จะจัดรูปตอน save
+    # ==== push per-frame list ====
     ntu25_sequence.append(frame_ntu25_list)
 
-    # ========= ST-GCN PREDICT ทุก ๆ 30 เฟรม =========
-    # if len(ntu25_sequence) >= 30 and (len(ntu25_sequence) % 10 == 0):
+    # ========= ST-GCN PREDICT ทุก ๆ 10 เฟรม (หลังมีครบ 300) =========
     if len(ntu25_sequence) >= 300 and len(ntu25_sequence) % 10 == 0:
-        # print("[SEQ] Total frames:", len(ntu25_sequence))
-        # print("[SEQ] Last frame people:", len(ntu25_sequence[-1]))
 
-        # สร้างเทนเซอร์ (1,3,300,25)
+        # ใช้เวอร์ชันใหม่ที่ normalize แบบ sequence-level เหมือนตอนเทรน
         data_tensor = preprocess_ntu25_sequence(ntu25_sequence, T=300)
-        # print("[STGCN INPUT SHAPE]", data_tensor.shape)
+        # ถ้าอยากเทียบผลกับเวอร์ชันเก่า:
+        # data_tensor_old = preprocess_ntu25_sequence_OLD(ntu25_sequence, T=300)
 
         if data_tensor is not None:
             data_tensor = data_tensor.to(device)
             with torch.no_grad():
-                # print("[STGCN] Preparing to run inference…")
-
                 out = stgcn_model(data_tensor)  # shape: (1, num_classes)
                 pred_id = int(out.argmax(dim=1).item())
 
-                # คำนวณ prob ของ class ที่ทำนาย
                 prob = F.softmax(out, dim=1)
                 pred_prob = float(prob[0, pred_id])
                 print(
@@ -595,22 +625,19 @@ while True:
                     out.mean().item(),
                     out.std().item(),
                 )
-
                 print(
                     f"[DEBUG] Predicted: {pred_id} ({ACTION_NAMES[pred_id]}), confidence={pred_prob:.3f}"
                 )
 
                 predict_history.append(pred_id)
 
-            # แปลง id → ชื่อคลาส
             if 0 <= pred_id < len(ACTION_NAMES):
                 current_action_text = ACTION_NAMES[pred_id]
             else:
                 current_action_text = f"class {pred_id}"
 
+        # เก็บแค่ 300 เฟรมล่าสุดไว้เป็น window
         ntu25_sequence = ntu25_sequence[-300:]
-
-    # ===============================================
 
     # วาด action text บนภาพ (ใช้ค่าล่าสุด)
     cv2.putText(
@@ -629,37 +656,32 @@ while True:
         break
 
 
-# ===================== [ADDED] cleanup & save =====================
+# ===================== cleanup & save =====================
 cam.release()
 cv2.destroyAllWindows()
 
-# ================== SUMMARY DEBUG REPORT ==================
 print("\n========== VIDEO SUMMARY ==========")
 print(f"Total frames read           : {total_frames}")
 print(f"Frames with detected person : {frames_with_person}")
 print(f"Frames without person       : {total_frames - frames_with_person}")
 
-# คนเฉลี่ยต่อเฟรม
 if len(people_per_frame) > 0:
     avg_people = sum(people_per_frame) / len(people_per_frame)
     max_people = max(people_per_frame)
     print(f"Average people per frame    : {avg_people:.2f}")
     print(f"Max people detected         : {max_people}")
 
-# Sequence length
 print(f"\nNTU25 sequence length       : {len(ntu25_sequence)} frames")
 
-# History of predictions
 if len(predict_history) > 0:
     print("\nPrediction history (class IDs):")
     print(predict_history[:20], "..." if len(predict_history) > 20 else "")
 
-    # นับว่าโมเดลเดาอะไรมากที่สุด
     from collections import Counter
 
     cnt = Counter(predict_history)
-    print("\nMost frequent prediction:")
     most_common_id, freq = cnt.most_common(1)[0]
+    print("\nMost frequent prediction:")
     print(f"  Class ID: {most_common_id}  →  '{ACTION_NAMES[most_common_id]}'")
     print(f"  Count   : {freq}")
 else:
@@ -667,9 +689,7 @@ else:
 
 print("\n========== END SUMMARY ==========\n")
 
-
 # if SAVE_NPY and len(ntu25_sequence) > 0:
 #     seq = np.stack(ntu25_sequence, axis=0)  # (T, 25, 3)
 #     np.save(SAVE_PATH, seq)
 #     print(f"✅ Saved NTU25 sequence: {seq.shape} -> {SAVE_PATH}")
-# ================================================================
